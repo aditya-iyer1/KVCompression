@@ -707,15 +707,206 @@ Analysis Layer: (Phase E, immediately after D)
 - `db/schema.py` (extend with bin_stats, transition_summary tables + indexes) (DONE)
 - `db/dao.py` (extend with aggregation read/write helpers) (DONE)
 
+CLI Wiring: (To expose D/E/F as stages; still consistent with blueprint)
+- `src/kv_transition/cli.py` (add score, analyze, report, all routing)
 
-# Phase 6
 
-Report Layer: (Phase F)
+# Phase 5 Completion Report — Aggregation, Transition Detection, and Analysis Artifacts (Phase E)
+
+## Files Completed
+
+### Analysis Layer
+- analysis/queries.py  
+- analysis/aggregate.py  
+- analysis/bootstrap.py  
+- analysis/transition.py  
+- analysis/plots.py  
+
+### DB Persistence (Phase E Extension)
+- db/schema.py (extended with Phase E tables)
+- db/dao.py (extended with Phase E helpers)
+
+### CLI Exposure (Phase D/E routing only)
+- src/kv_transition/cli.py (extended)
+
+---
+
+## Responsibilities Implemented
+
+## 1. Read-Only Analysis Queries (DB → Rows)
+
+`analysis/queries.py` provides explicit joins to produce per-request, per-bin rows for a run:
+
+- Joins:
+  - requests
+  - scores
+  - telemetry
+  - manifest_entries (bin assignment)
+  - failures (failure indicator)
+- Outputs stable fields required for aggregation:
+  - bin_idx, em, f1, latency_s, token counts, failure flag
+- Deterministic ordering (bin_idx, request_id)
+
+This is the single source for aggregation inputs (no inference loop dependency).
+
+---
+
+## 2. Bin-Level Aggregation (Per Run)
+
+`analysis/aggregate.py` computes per-bin stats for a single run:
+
+- n
+- acc_mean (mean F1; primary “accuracy”)
+- acc_std (population std)
+- em_mean
+- fail_rate
+- latency percentiles: p50/p95
+- token usage percentiles: p50/p95
+
+Pure computation, no DB writes, deterministic.
+
+---
+
+## 3. Deterministic Bootstrap Confidence Intervals
+
+`analysis/bootstrap.py` implements percentile bootstrap for mean accuracy:
+
+- Deterministic seed (default 1337; CLI reads settings.analysis.seed if present)
+- Adds:
+  - acc_ci_low
+  - acc_ci_high
+per bin
+
+Standard library only.
+
+---
+
+## 4. Transition Detection (Aggregates → Transition Summary)
+
+`analysis/transition.py` detects the instability transition zone from aggregated curves:
+
+- Input: list of runs with kv_budget + bin acc_mean values
+- Rule: first budget where overall mean accuracy drops by >= drop_threshold vs prior higher budget
+- Outputs:
+  - transition_budget, pre_budget
+  - acc_pre, acc_post
+  - drop
+  - method
+  - transition_bin_idx (largest per-bin drop between pre/post)
+
+Consumes only aggregated/bin-level stats, not raw request loops.
+
+---
+
+## 5. Minimal Plotting Artifacts
+
+`analysis/plots.py` generates reproducible matplotlib plots:
+
+- acc_by_bin.png (one curve per kv_budget)
+- fail_by_bin.png
+- latency_p50_by_bin.png (only if data present)
+
+Saved under:
+- runs/<exp_group_id>/plots/
+
+Deterministic ordering:
+- kv_budget sorted ascending
+- bin_idx ascending
+
+---
+
+## 6. DB Persistence for Aggregates + Transition
+
+### Schema extension (idempotent)
+
+Added:
+- bin_stats (PK: run_id, bin_idx)
+- transition_summary (PK: exp_group_id)
+
+Indexes:
+- bin_stats(run_id)
+- bin_stats(dataset_id, bin_idx)
+
+Reserved keyword handled:
+- `"drop"` column quoted in SQL.
+
+### DAO extension
+
+Added:
+- upsert_bin_stats(run_id, dataset_id, bin_stats)
+- upsert_transition_summary(summary)  (handles `"drop"` + created_at)
+- get_bin_stats_for_run(run_id)
+- get_transition_summary(exp_group_id)
+
+Phase B/C functions preserved.
+
+---
+
+## 7. CLI Stage Exposure (Score + Analyze)
+
+`src/kv_transition/cli.py` now exposes:
+
+- `score` (Phase D)
+  - DB-only scoring stage
+  - run-scoped (single run_id or all runs for exp_group_id)
+
+- `analyze` (Phase E)
+  - DB-only aggregation + bootstrap + transition detection + plots
+  - Writes:
+    - bin_stats rows per run
+    - transition_summary per exp_group_id
+    - plots under runs/<exp_group_id>/plots/
+
+Run discovery:
+- if `--run-id` omitted, queries runs for exp_group_id ordered by kv_budget DESC.
+
+No Phase F report wiring added (by design).
+
+---
+
+## Architectural Integrity Check
+
+- Phase E consumes:
+  - Phase C logs + Phase D scores only
+- No model calls.
+- Transition detection depends only on aggregated/bin-level outputs.
+- Aggregates persisted to DB as canonical analysis products.
+- Plots are derived artifacts.
+
+No structural drift detected.
+
+---
+
+## Phase E Definition of Done
+
+- [x] Per-run bin-level query surface implemented
+- [x] Bin-level aggregates computed deterministically
+- [x] Percentile bootstrap CIs (deterministic seed)
+- [x] Transition detection implemented (aggregate-driven)
+- [x] Matplotlib plots generated as reproducible artifacts
+- [x] bin_stats + transition_summary tables added
+- [x] DAO supports aggregate persistence + retrieval
+- [x] CLI exposes analyze stage (DB-only)
+
+Phase 5 complete.
+
+# Phase F
+
+Report layer
 - `report/build.py`
 - `report/templates/report.md.jinja`
 
-CLI Wiring: (To expose D/E/F as stages; still consistent with blueprint)
-- `src/kv_transition/cli.py` (add score, analyze, report, all routing)
+CLI exposure (Phase F routing + “all” pipeline)
+- `src/kv_transition/cli.py` (add report and all commands)
+
+Optional DB touch (only if missing from earlier phases)
+- `db/dao.py` (read helpers needed by report builder if not already present: experiment metadata, run list w/ kv_budget, bin_stats, transition_summary, plot paths)
+- `db/schema.py` (only if you want a tiny report_artifacts table; not required by the blueprint)
+
+
+
+
+
 
 
 
