@@ -704,6 +704,9 @@ Analysis Layer: (Phase E, immediately after D)
 - `analysis/transition.py` (DONE)
 - `analysis/plots.py` (DONE)
 
+- `db/schema.py` (extend with bin_stats, transition_summary tables + indexes) (DONE)
+- `db/dao.py` (extend with aggregation read/write helpers) (DONE)
+
 
 # Phase 6
 
@@ -714,6 +717,5 @@ Report Layer: (Phase F)
 CLI Wiring: (To expose D/E/F as stages; still consistent with blueprint)
 - `src/kv_transition/cli.py` (add score, analyze, report, all routing)
 
-DB Updated needed for D/E/F tables:
-- `db/schema.py` (extend with bin_stats, transition_summary tables + indexes)
-- `db/dao.py` (extend with aggregation read/write helpers)
+
+

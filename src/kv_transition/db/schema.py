@@ -1,17 +1,17 @@
-"""SQLite schema definition for Phase B dataset preparation and Phase C inference logging.
+"""SQLite schema definition for Phase B dataset preparation, Phase C inference logging, and Phase E aggregation.
 
 Creates tables for storing datasets, examples, bins, manifest entries, runs, requests,
-responses, telemetry, and failures.
+responses, telemetry, failures, bin_stats, and transition_summary.
 """
 
 import sqlite3
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
-    """Initialize database schema with Phase B and Phase C tables.
+    """Initialize database schema with Phase B, Phase C, and Phase E tables.
     
     Creates tables for experiments, datasets, examples, bins, manifest_entries,
-    runs, requests, responses, telemetry, and failures.
+    runs, requests, responses, telemetry, failures, bin_stats, and transition_summary.
     Uses IF NOT EXISTS for idempotency. Foreign keys are enabled by connect.py.
     
     Args:
@@ -174,6 +174,62 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_requests_dataset_entry
         ON requests(dataset_id, entry_idx)
+    """)
+    
+    # ===== Phase E: Aggregation and transition detection tables =====
+    
+    # Bin stats table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bin_stats (
+            run_id TEXT NOT NULL,
+            dataset_id TEXT NOT NULL,
+            bin_idx INTEGER NOT NULL,
+            token_min INTEGER,
+            token_max INTEGER,
+            n INTEGER,
+            acc_mean REAL,
+            acc_std REAL,
+            acc_ci_low REAL,
+            acc_ci_high REAL,
+            em_mean REAL,
+            fail_rate REAL,
+            lat_p50 REAL,
+            lat_p95 REAL,
+            tok_p50 REAL,
+            tok_p95 REAL,
+            PRIMARY KEY (run_id, bin_idx),
+            FOREIGN KEY (run_id) REFERENCES runs(run_id),
+            FOREIGN KEY (dataset_id) REFERENCES datasets(dataset_id)
+        )
+    """)
+    
+    # Transition summary table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS transition_summary (
+            exp_group_id TEXT PRIMARY KEY,
+            kv_policy TEXT,
+            method TEXT,
+            drop_threshold REAL,
+            pre_budget REAL,
+            transition_budget REAL,
+            acc_pre REAL,
+            acc_post REAL,
+            "drop" REAL,
+            transition_bin_idx INTEGER,
+            created_at TEXT,
+            FOREIGN KEY (exp_group_id) REFERENCES experiments(exp_group_id)
+        )
+    """)
+    
+    # Indexes for common Phase E queries
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_bin_stats_run_id
+        ON bin_stats(run_id)
+    """)
+    
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_bin_stats_dataset_bin
+        ON bin_stats(dataset_id, bin_idx)
     """)
     
     # Commit changes
