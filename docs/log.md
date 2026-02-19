@@ -548,7 +548,7 @@ Phase 3 complete.
 Eval Layer: (Phase D)
 - `eval/metrics.py` (DONE)
 - `eval/failure_taxonomy.py` (DONE)
-- `eval/score.py`
+- `eval/score.py` (DONE)
 
 # Phase 5
 
