@@ -89,6 +89,20 @@ def run_one_setting(
     # Optional local debug flag for extra logging
     debug = False
     
+    # Check if run_id already has requests (prevent duplicate runs)
+    cursor = conn.execute(
+        "SELECT COUNT(*) FROM requests WHERE run_id = ?",
+        (run_id,)
+    )
+    request_count = cursor.fetchone()[0]
+    
+    if request_count > 0:
+        raise ValueError(
+            f"Run {run_id} already has {request_count} request(s) persisted. "
+            f"Refusing to re-run to avoid mixing data. "
+            f"To rerun, use a new exp_group_id or delete existing rows for this run_id."
+        )
+    
     # Compute prompt template version hash
     prompt_template_version = _compute_prompt_template_version()
     
