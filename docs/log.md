@@ -131,11 +131,19 @@ Once confirmed, we will select the first Phase B file.
 # Phase 2
 
 FTM: 
+
+DONE:
 - `src/kv_transition/data/longbench_loader.py`
 - `src/kv_transition/data/normalize.py`
 - `src/kv_transition/data/tokenizer.py`
 - `src/kv_transition/data/binning.py`
 - `src/kv_transition/data/manifest.py`
+
+NOT DONE:
+
+
+
+
 
 Also Phase B requires DB support, so you’ll need these in the same phase boundary if they don’t exist yet (still structural Phase B dependency, even though they live under db/):
 - `db/connect.py`
