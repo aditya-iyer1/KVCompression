@@ -1,0 +1,67 @@
+# KV Transition Report — {{ exp_group_id }}
+
+## Overview
+
+**Generated:** {{ generated_at }}
+
+{% if experiment %}
+**Experiment Created:** {{ experiment.created_at or "(not available)" }}  
+{% if experiment.git_hash %}**Git Hash:** {{ experiment.git_hash }}{% endif %}  
+{% if experiment.notes %}**Notes:** {{ experiment.notes }}{% endif %}
+{% else %}
+**Experiment Metadata:** (not available)
+{% endif %}
+
+{% if transition %}
+## Transition Summary
+
+**Method:** {{ transition.method or "(not available)" }}  
+**Drop Threshold:** {{ transition.drop_threshold or "(not available)" }}
+
+**Transition Detected:**
+- **Pre-budget:** {{ transition.pre_budget or "(not available)" }} → **Transition budget:** {{ transition.transition_budget or "(not available)" }}
+- **Accuracy (pre):** {{ "%.3f"|format(transition.acc_pre) if transition.acc_pre is not none else "(not available)" }}
+- **Accuracy (post):** {{ "%.3f"|format(transition.acc_post) if transition.acc_post is not none else "(not available)" }}
+- **Drop:** {{ "%.3f"|format(transition.drop) if transition.drop is not none else "(not available)" }}
+{% if transition.transition_bin_idx is not none %}- **Transition bin index:** {{ transition.transition_bin_idx }}{% endif %}
+{% else %}
+## Transition Summary
+
+No transition detected.
+{% endif %}
+
+{% if plots %}
+## Plots
+
+{% for plot_name, plot_path in plots.items() %}
+### {{ plot_name }}
+
+![{{ plot_name }}]({{ plot_path }})
+
+{% endfor %}
+{% endif %}
+
+## Runs Summary
+
+| Run ID | KV Budget | KV Policy | Model | Created At |
+|--------|-----------|-----------|-------|------------|
+{% for run in runs %}
+| {{ run.run_id }} | {{ "%.2f"|format(run.kv_budget) if run.kv_budget is not none else "(not available)" }} | {{ run.kv_policy or "(not available)" }} | {{ run.model_name or "(not available)" }} | {{ run.created_at or "(not available)" }} |
+{% endfor %}
+
+## Per-Run Bin Stats
+
+{% for run in runs %}
+### Run: {{ run.run_id }} (kv_budget={{ "%.2f"|format(run.kv_budget) if run.kv_budget is not none else "N/A" }})
+
+{% if run.bin_stats %}
+| Bin | Token Range | N | Acc Mean | Acc CI | Fail Rate | Lat P50 | Lat P95 | Tok P50 | Tok P95 |
+|-----|-------------|---|----------|--------|-----------|---------|---------|---------|---------|
+{% for stat in run.bin_stats %}
+| {{ stat.bin_idx }} | {{ stat.token_min or "N/A" }}-{{ stat.token_max or "N/A" }} | {{ stat.n or "N/A" }} | {{ "%.3f"|format(stat.acc_mean) if stat.acc_mean is not none else "N/A" }} | {{ "%.3f"|format(stat.acc_ci_low) if stat.acc_ci_low is not none else "N/A" }}-{{ "%.3f"|format(stat.acc_ci_high) if stat.acc_ci_high is not none else "N/A" }} | {{ "%.3f"|format(stat.fail_rate) if stat.fail_rate is not none else "N/A" }} | {{ "%.3f"|format(stat.lat_p50) if stat.lat_p50 is not none else "N/A" }} | {{ "%.3f"|format(stat.lat_p95) if stat.lat_p95 is not none else "N/A" }} | {{ "%.1f"|format(stat.tok_p50) if stat.tok_p50 is not none else "N/A" }} | {{ "%.1f"|format(stat.tok_p95) if stat.tok_p95 is not none else "N/A" }} |
+{% endfor %}
+{% else %}
+No bin stats available for this run.
+{% endif %}
+
+{% endfor %}
