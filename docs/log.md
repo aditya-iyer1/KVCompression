@@ -308,19 +308,239 @@ Run Layer:
 - `run/orchestrate.py`
 - `run/runner.py`
 - `run/retries.py`
-
-
-NOT DONE:
-
-Run layer
-
-
-
 - `run/telemetry.py`
+
 
 DB updates (Phase C schema + DAO surface)
 - `db/schema.py` (extend with Phase C tables/indexes)
 - `db/dao.py` (extend with run/request/response/telemetry ops)
 
-(You should not need to touch Phase B data files for Phase C.)
+# Phase 3 Completion Report — Inference & Logging Layer
+
+## Files Completed
+
+### Engines
+- engines/base.py  
+- engines/openai_compat.py  
+- engines/endpoints.py  
+
+### Run Layer
+- run/orchestrate.py  
+- run/runner.py  
+- run/retries.py  
+- run/telemetry.py  
+
+### DB (Phase C Extension)
+- db/schema.py (extended)
+- db/dao.py (extended)
+
+---
+
+## Responsibilities Implemented
+
+## 1. Engine Abstraction (Provider-Agnostic)
+
+### Base Interface
+- `BaseEngine.generate(...)` defines the stable contract.
+- `EngineResult` encapsulates:
+  - text
+  - usage
+  - finish_reason
+  - timings
+  - raw response
+
+Runner is now completely provider-agnostic.
+
+### OpenAI-Compatible Engine
+- Plain HTTP client (no SDK dependency).
+- Works with:
+  - OpenAI API
+  - vLLM OpenAI server
+  - SGLang OpenAI server
+- Configurable via:
+  - base_url
+  - api_key (optional)
+  - model name
+- Returns structured `EngineResult`.
+
+### Endpoint Resolution
+- `build_engine(settings)` resolves:
+  - base_url
+  - API key from env
+  - model name
+- Runner does not read environment directly.
+
+---
+
+## 2. Orchestration Layer
+
+### orchestrate(settings)
+
+Responsibilities:
+- Resolve run paths + DB.
+- Initialize schema (idempotent).
+- Build engine.
+- Loop over `kv.budgets`.
+- Create one run per budget.
+- Call `run_one_setting(...)`.
+
+Design properties:
+- Sequential (no concurrency yet).
+- No scoring or analysis logic.
+- Clean separation of control flow vs execution.
+
+---
+
+## 3. Execution Layer (Runner)
+
+### run_one_setting(...)
+
+For a single `(run_id, kv_budget)`:
+
+1. Resolve dataset_id.
+2. Load manifest entries from DB.
+3. Fetch canonical examples.
+4. Build deterministic messages:
+   - system: instruction
+   - user: context + question
+5. Call engine.
+6. Persist:
+   - run
+   - request
+   - response
+   - telemetry
+   - failure (if exception)
+
+Error handling:
+- Failures logged.
+- Loop continues.
+- No global crash.
+
+Runner now produces structured inference logs.
+
+---
+
+## 4. Retry Utility
+
+- Exponential backoff with jitter.
+- Retry on:
+  - timeouts
+  - connection errors
+  - HTTP 429
+  - HTTP 5xx
+- Re-raises non-retryable errors immediately.
+
+Ready for integration in engine calls (optional hook).
+
+---
+
+## 5. Telemetry Normalization
+
+`extract_telemetry()` produces normalized JSON-safe telemetry:
+
+- latency_s
+- ttfb_s
+- prompt_tokens
+- completion_tokens
+- total_tokens
+- finish_reason
+- notes_json
+
+Stable and provider-agnostic.
+
+---
+
+## 6. Database Schema — Phase C Extension
+
+### New Tables Added
+
+- runs
+- requests
+- responses
+- telemetry
+- failures
+
+All:
+- Idempotent creation
+- Foreign keys enforced
+- Indexed for run-level queries
+
+Phase B tables preserved intact.
+
+---
+
+## 7. DAO — Phase C Surface
+
+New write operations:
+
+- upsert_run
+- insert_request
+- insert_response
+- upsert_telemetry
+- upsert_failure
+
+New read helpers:
+
+- run_exists
+- count_requests_for_run
+
+Properties:
+- Transaction-safe
+- Deterministic IDs supplied externally
+- JSON fields consistently serialized
+- Phase B APIs untouched
+
+---
+
+## End-to-End Capability Achieved
+
+Given:
+- Config
+- Prepared manifest (Phase B)
+
+The system can now:
+
+1. Open DB
+2. Create run for each KV budget
+3. Execute all manifest entries
+4. Persist:
+   - inputs
+   - outputs
+   - timing
+   - token usage
+   - errors
+5. Complete without crashing on single failure
+
+The harness now produces structured experiment logs suitable for scoring and analysis.
+
+---
+
+## Architectural Integrity Check
+
+- No modification to Phase B data pipeline.
+- Schema extended in-place (idempotent).
+- Engine fully abstracted.
+- Runner isolated from scoring.
+- No leakage into analysis/report layers.
+- DB remains single source of truth.
+
+No structural drift detected.
+
+---
+
+## Phase 3 Definition of Done Status
+
+- [x] Engine abstraction defined
+- [x] OpenAI-compatible engine implemented
+- [x] Endpoint resolution isolated
+- [x] Orchestration grid loop implemented
+- [x] Runner executes manifest entries
+- [x] Retry utility implemented
+- [x] Telemetry normalization implemented
+- [x] Schema extended for inference logging
+- [x] DAO extended for Phase C persistence
+- [x] End-to-end run persistence validated
+
+Phase 3 complete.
+
 
