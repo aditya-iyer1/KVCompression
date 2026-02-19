@@ -897,16 +897,180 @@ Report layer
 - `report/templates/report.md.jinja` (DONE)
 
 CLI exposure (Phase F routing + “all” pipeline)
-- `src/kv_transition/cli.py` (add report and all commands)
+- `src/kv_transition/cli.py` (add report and all commands) (DONE)
 
-Optional DB touch (only if missing from earlier phases)
-- `db/dao.py` (read helpers needed by report builder if not already present: experiment metadata, run list w/ kv_budget, bin_stats, transition_summary, plot paths)
+Optional DB touch (only if missing from earlier phases) (SKIPPED)
+- `db/dao.py` (read helpers needed by report builder if not already present: experiment metadata, run list w/ kv_budget, bin_stats, transition_summary, plot paths) (Skip_)
 - `db/schema.py` (only if you want a tiny report_artifacts table; not required by the blueprint)
 
 
+# Phase 6 Completion Report — Report Generation & Pipeline Finalization (Phase F)
 
+## Files Completed
 
+### Report Layer
+- report/build.py  
+- report/templates/report.md.jinja  
 
+### CLI Exposure
+- src/kv_transition/cli.py (extended with `report` and `all`)
 
+No required schema changes for Phase F.
 
+---
 
+## Responsibilities Implemented
+
+## 1. Report Builder (DB → Markdown)
+
+### build_report(conn, settings)
+
+Produces:
+
+runs/<exp_group_id>/report.md
+
+Inputs:
+- SQLite:
+  - experiments
+  - runs
+  - bin_stats
+  - transition_summary
+- Filesystem:
+  - plots under `runs/<exp_group_id>/plots/`
+
+Properties:
+- No scoring.
+- No aggregation.
+- No transition recomputation.
+- No inference.
+- Purely reads persisted Phase E outputs.
+
+Template rendered via Jinja2 using a single structured context:
+- exp_group_id
+- experiment metadata (if present)
+- runs (with embedded bin_stats)
+- transition summary
+- plot paths
+- generated_at timestamp
+
+Deterministic given same DB + plot files.
+
+---
+
+## 2. Markdown Template
+
+`report.md.jinja` renders:
+
+1. Title
+2. Overview (metadata + timestamp)
+3. Transition Summary (if present)
+4. Plots (only those that exist)
+5. Runs Summary Table
+6. Per-Run Bin Stats tables
+
+Features:
+- Graceful handling of missing metadata
+- Graceful handling of missing plots
+- Graceful handling of missing transition
+- Consistent numeric formatting
+- Markdown-only (no HTML)
+
+---
+
+## 3. CLI Exposure — Phase F Routing
+
+### `report`
+DB-only command:
+
+python -m kv_transition report -c config.yaml
+
+- Opens DB
+- Calls build_report()
+- Writes report.md
+- Prints report path
+
+---
+
+### `all`
+Full pipeline (DB-only; no inference):
+
+python -m kv_transition all -c config.yaml
+
+Sequentially runs:
+1. Phase D — score
+2. Phase E — analyze
+3. Phase F — report
+
+Optional:
+
+–run-id
+
+applies to score + analyze; report remains experiment-group scoped.
+
+Single DB open.
+Single schema init.
+Clean stage boundaries.
+
+---
+
+## Architectural Integrity Check
+
+Separation boundaries preserved:
+
+| Phase | Responsibility | Recomputed? |
+|--------|----------------|------------|
+| C | Inference + logging | No |
+| D | Scoring | No |
+| E | Aggregation + transition | No |
+| F | Report rendering | No |
+
+Report builder:
+- Reads DB only.
+- Reads filesystem plots only.
+- Does not depend on inference logic.
+- Does not depend on scoring logic.
+- Does not mutate experiment state (except writing report file).
+
+DB remains the canonical source of structured experiment truth.
+
+No structural drift detected.
+
+---
+
+## Phase F Definition of Done
+
+- [x] Markdown report generated from DB
+- [x] Jinja template created and validated
+- [x] No recomputation inside report layer
+- [x] Plots embedded conditionally
+- [x] Transition summary rendered conditionally
+- [x] CLI exposes `report`
+- [x] CLI exposes `all` (D→E→F)
+- [x] Stage isolation maintained
+- [x] Deterministic output given fixed DB + plots
+
+Phase 6 complete.
+
+---
+
+# System Status — End-to-End Capability
+
+The system can now:
+
+1. Prepare dataset + manifest (Phase B)
+2. Execute inference across KV budgets (Phase C)
+3. Persist structured logs (requests/responses/telemetry)
+4. Compute EM/F1 + normalize failures (Phase D)
+5. Aggregate bin-level statistics + bootstrap CIs (Phase E)
+6. Detect transition zone (Phase E)
+7. Generate plots (Phase E)
+8. Render full experiment report (Phase F)
+
+All stages are:
+- Modular
+- DB-driven
+- Reproducible
+- Deterministic (with fixed seeds)
+- Cleanly separated
+
+The blueprint is fully realized.
