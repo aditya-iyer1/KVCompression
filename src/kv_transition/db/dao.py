@@ -1,7 +1,7 @@
-"""Data Access Object for Phase B and Phase C database operations.
+"""Data Access Object for Phase B, Phase C, and Phase E database operations.
 
 Provides functions to insert and query datasets, examples, bins, manifest entries,
-runs, requests, responses, telemetry, and failures.
+runs, requests, responses, telemetry, failures, bin_stats, and transition_summary.
 """
 
 import json
@@ -391,3 +391,142 @@ def count_requests_for_run(conn: sqlite3.Connection, run_id: str) -> int:
     cursor = conn.execute("SELECT COUNT(*) FROM requests WHERE run_id = ?", (run_id,))
     result = cursor.fetchone()
     return result[0] if result else 0
+
+
+# ===== Phase E: Aggregation and transition detection operations =====
+
+def upsert_bin_stats(
+    conn: sqlite3.Connection,
+    run_id: str,
+    dataset_id: str,
+    bin_stats: List[Dict]
+) -> None:
+    """Insert or replace bin_stats records for a run.
+    
+    Args:
+        conn: SQLite connection.
+        run_id: Run identifier.
+        dataset_id: Dataset identifier.
+        bin_stats: List of bin stat dicts with fields:
+            - bin_idx (required)
+            - token_min, token_max (optional)
+            - n, acc_mean, acc_std, acc_ci_low, acc_ci_high, em_mean (optional)
+            - fail_rate, lat_p50, lat_p95, tok_p50, tok_p95 (optional)
+    """
+    with conn:
+        for stat in bin_stats:
+            bin_idx = stat.get('bin_idx')
+            if bin_idx is None:
+                continue
+            
+            conn.execute("""
+                INSERT OR REPLACE INTO bin_stats (
+                    run_id, dataset_id, bin_idx, token_min, token_max, n,
+                    acc_mean, acc_std, acc_ci_low, acc_ci_high, em_mean,
+                    fail_rate, lat_p50, lat_p95, tok_p50, tok_p95
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                run_id,
+                dataset_id,
+                bin_idx,
+                stat.get('token_min'),
+                stat.get('token_max'),
+                stat.get('n'),
+                stat.get('acc_mean'),
+                stat.get('acc_std'),
+                stat.get('acc_ci_low'),
+                stat.get('acc_ci_high'),
+                stat.get('em_mean'),
+                stat.get('fail_rate'),
+                stat.get('lat_p50'),
+                stat.get('lat_p95'),
+                stat.get('tok_p50'),
+                stat.get('tok_p95')
+            ))
+
+
+def upsert_transition_summary(
+    conn: sqlite3.Connection,
+    summary: Dict
+) -> None:
+    """Insert or replace transition_summary record.
+    
+    Args:
+        conn: SQLite connection.
+        summary: Dict with fields:
+            - exp_group_id (required)
+            - kv_policy, method, drop_threshold (optional)
+            - pre_budget, transition_budget, acc_pre, acc_post, drop (optional)
+            - transition_bin_idx (optional)
+            - created_at (optional, will be set if missing)
+    """
+    with conn:
+        exp_group_id = summary.get('exp_group_id')
+        if not exp_group_id:
+            raise ValueError("exp_group_id is required in summary")
+        
+        created_at = summary.get('created_at')
+        if not created_at:
+            created_at = datetime.utcnow().isoformat()
+        
+        # Handle "drop" column (quoted in SQL since it's a reserved keyword)
+        conn.execute("""
+            INSERT OR REPLACE INTO transition_summary (
+                exp_group_id, kv_policy, method, drop_threshold,
+                pre_budget, transition_budget, acc_pre, acc_post, "drop",
+                transition_bin_idx, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            exp_group_id,
+            summary.get('kv_policy'),
+            summary.get('method'),
+            summary.get('drop_threshold'),
+            summary.get('pre_budget'),
+            summary.get('transition_budget'),
+            summary.get('acc_pre'),
+            summary.get('acc_post'),
+            summary.get('drop'),
+            summary.get('transition_bin_idx'),
+            created_at
+        ))
+
+
+def get_bin_stats_for_run(
+    conn: sqlite3.Connection,
+    run_id: str
+) -> List[sqlite3.Row]:
+    """Get all bin_stats for a run.
+    
+    Args:
+        conn: SQLite connection.
+        run_id: Run identifier.
+    
+    Returns:
+        List of Row objects, ordered by bin_idx.
+    """
+    return conn.execute("""
+        SELECT * FROM bin_stats
+        WHERE run_id = ?
+        ORDER BY bin_idx
+    """, (run_id,)).fetchall()
+
+
+def get_transition_summary(
+    conn: sqlite3.Connection,
+    exp_group_id: str
+) -> Optional[sqlite3.Row]:
+    """Get transition_summary for an experiment group.
+    
+    Args:
+        conn: SQLite connection.
+        exp_group_id: Experiment group identifier.
+    
+    Returns:
+        Row object or None if not found.
+    """
+    cursor = conn.execute("""
+        SELECT * FROM transition_summary
+        WHERE exp_group_id = ?
+    """, (exp_group_id,))
+    
+    return cursor.fetchone()
