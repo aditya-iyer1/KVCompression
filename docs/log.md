@@ -550,6 +550,150 @@ Eval Layer: (Phase D)
 - `eval/failure_taxonomy.py` (DONE)
 - `eval/score.py` (DONE)
 
+
+# Phase 4 Completion Report — Scoring & Failure Taxonomy (Phase D)
+
+## Files Completed
+
+- eval/metrics.py  
+- eval/failure_taxonomy.py  
+- eval/score.py  
+
+---
+
+## Responsibilities Implemented
+
+## 1. Core Metrics (Pure Functions)
+
+### Text Normalization
+- Lowercase
+- Trim + collapse whitespace
+- Remove punctuation
+- Deterministic output
+
+### Exact Match (EM)
+- 1.0 if normalized strings identical
+- 0.0 otherwise
+- Both empty → 1.0
+- One empty → 0.0
+
+### F1 Score
+- Token-overlap F1
+- Whitespace tokenization
+- Deterministic
+- Handles empty strings safely
+
+### Multi-Gold Handling
+- `best_exact_match(pred, golds)`
+- `best_f1(pred, golds)`
+- Max over gold answers
+
+Metrics are:
+- Pure
+- Dependency-free
+- Deterministic
+- Model-agnostic
+
+---
+
+## 2. Stable Failure Taxonomy
+
+Defined stable failure labels:
+
+- EMPTY_OUTPUT  
+- TRUNCATED  
+- FORMAT_ERROR  
+- REFUSAL  
+- TIMEOUT  
+- ENGINE_ERROR  
+
+Classifier characteristics:
+
+- Conservative (minimal pattern matching)
+- Deterministic
+- Priority-ordered
+- Returns `None` for normal responses
+- Compatible with Phase C raw error logs
+
+This prevents unstable failure rate measurement later.
+
+---
+
+## 3. Run-Scoped Scoring Stage
+
+### score_run(conn, run_id)
+
+Responsibilities:
+
+1. Read Phase C logs:
+   - requests
+   - responses
+   - failures
+   - examples (gold answers)
+
+2. Compute:
+   - EM
+   - F1
+   - normalized prediction
+   - normalized gold reference
+
+3. Classify failures via taxonomy.
+
+4. Persist:
+   - scores(request_id, em, f1, pred_norm, gold_norm)
+   - Update failures table with taxonomy labels.
+
+No model calls.
+No inference logic.
+Purely post-hoc scoring.
+
+---
+
+## 4. Schema Handling
+
+- `scores` table created idempotently (IF NOT EXISTS).
+- Does not modify Phase C schema.
+- Does not require schema migrations.
+- CSV fallback included (defensive only).
+
+Scoring remains cleanly separated from inference.
+
+---
+
+## Architectural Integrity Check
+
+- Phase C remains pure execution + logging.
+- Phase D reads from DB only.
+- No re-execution of model.
+- Metrics are isolated.
+- Failure taxonomy stable and centralized.
+- No schema drift introduced.
+- DB remains canonical source of truth.
+
+Separation between:
+- Inference (Phase C)
+- Evaluation (Phase D)
+is preserved.
+
+No architectural drift detected.
+
+---
+
+## Phase D Definition of Done
+
+- [x] Deterministic EM implementation
+- [x] Deterministic F1 implementation
+- [x] Multi-gold handling
+- [x] Failure taxonomy defined
+- [x] Failure classifier implemented
+- [x] score_run(run_id) implemented
+- [x] Scores written to DB
+- [x] Failures normalized into taxonomy
+- [x] No inference reruns required
+- [x] Fully DB-driven scoring
+
+Phase 4 complete.
+
 # Phase 5
 
 
@@ -568,8 +712,8 @@ Report Layer: (Phase F)
 - `report/templates/report.md.jinja`
 
 CLI Wiring: (To expose D/E/F as stages; still consistent with blueprint)
-- `src/kv_transition/cli.py` (add score, analyze, report, all routing)
+- `src/kv_transition/cli.py` (add analyze command routing only; no report yet unless you’re merging Phase F next)
 
 DB Updated needed for D/E/F tables:
-- `db/schema.py` (extend with D/E/F scores, plus analysis tables bin_stats, transition_summary)
-- `db/dao.py` (extend with write/query ops for the above)
+- `db/schema.py` (extend with bin_stats, transition_summary tables + indexes)
+- `db/dao.py` (extend with aggregation read/write helpers)
