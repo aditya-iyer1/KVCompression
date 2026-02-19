@@ -111,20 +111,6 @@ No structural drift detected.
 
 Phase 1 complete.
 
----
-
-## Information Required Before Phase 2
-
-To proceed to Phase B (Dataset + Manifest Layer), confirm:
-
-1. Which exact LongBench task string should be canonical for snapkv_longbench.yaml?
-2. Are we pinning tokenizer to a specific model family (e.g., same as model.name), or do we want tokenizer explicitly configurable?
-3. Should manifest.json be required alongside DB, or DB-only sufficient?
-
-Once confirmed, we will select the first Phase B file.
-
-
-
 
 
 
@@ -141,16 +127,197 @@ DONE:
 
 - `db/connect.py`
 - `db/schema.py`
+- `db/dao.py`
+
+# Phase 2 Completion Report — Dataset + Manifest Layer
+
+## Files Completed
+
+### Data Layer
+- data/longbench_loader.py  
+- data/normalize.py  
+- data/tokenizer.py  
+- data/binning.py  
+- data/manifest.py  
+
+### DB Layer (Phase B scope)
+- db/connect.py  
+- db/schema.py  
+- db/dao.py  
+
+---
+
+## Responsibilities Implemented
+
+### 1. Dataset Loading (Authoritative Task Binding)
+- LongBench loader fetches task subset using exact, case-sensitive dataset key.
+- `list_longbench_tasks()` dynamically queries dataset metadata (no hardcoding).
+- Raw examples returned untouched (no implicit normalization).
+- Repo-local cache under `data/raw/longbench/`.
+
+This preserves:
+- Task immutability per experiment group.
+- Alignment between config.dataset.task and actual dataset key.
+
+---
+
+### 2. Canonical Example Normalization
+
+Canonical schema enforced:
+
+{
+example_id: str,
+question: str,
+context: str,
+answers: list[str],
+meta: dict
+}
+
+- Deterministic ID generation (stable across runs).
+- Answers always normalized to list[str].
+- JSON-serializable output.
+- Exact task string preserved in meta.
+
+No tokenization or binning logic embedded here.
+
+---
+
+### 3. Tokenization Layer (Configurable + Deterministic)
+
+- `tokenizer.name` explicitly supported.
+- Defaults to `model.name` if unspecified.
+- `count_tokens()`:
+  - Uses tiktoken when available.
+  - Falls back to deterministic approximation.
+- Stable token counts across runs.
+
+This locks in reproducibility for binning.
+
+---
+
+### 4. Length-Based Binning
+
+- Quantile-style bin edge computation.
+- Deterministic bin assignment.
+- No randomness.
+- Guaranteed:
+  - Exactly `n_bins` edges.
+  - Every example assigned to `[0, n_bins-1]`.
+
+This establishes the structural backbone for transition analysis later.
+
+---
+
+### 5. Manifest Contract (Portable Artifact)
+
+`manifest.json` now required and generated at:
+
+data/processed/<dataset_id>/manifest.json
+
+Dataset ID convention:
+
+{dataset_name}__{task}
+
+Manifest contains:
+- dataset metadata (name, task)
+- tokenizer_name
+- n_bins, n_per_bin
+- bin_edges
+- entries (example_id, bin_idx, token_len)
+- examples (full canonical examples)
+
+Selection logic:
+- Deterministic.
+- Up to `n_bins * n_per_bin`.
+- Sorted by (token_len, example_id).
+
+Manifest is now the durable contract between Phase B and Phase C.
+
+---
+
+### 6. SQLite Backbone (Phase B Scope Only)
+
+#### Tables Created
+- experiments
+- datasets
+- examples
+- bins
+- manifest_entries
+
+#### Properties
+- Foreign keys enforced.
+- Idempotent schema creation.
+- Indexed for expected queries.
+- JSON fields stored as TEXT.
+
+DAO supports:
+- Upserting datasets
+- Bulk inserting examples
+- Inserting bins
+- Inserting manifest entries
+- Reading manifest entries + examples
+
+DB is now the canonical source of truth.
+manifest.json is the portable snapshot.
+
+---
+
+## Architectural Integrity Check
+
+Phase B satisfies blueprint constraints:
+
+- DB as source of truth.
+- manifest.json required and portable.
+- Tokenizer explicitly configurable.
+- Task string exact and preserved.
+- No leakage into Phase C (no engine logic).
+- No Phase C schema tables prematurely introduced.
+- Deterministic artifact generation.
+
+No structural drift detected.
+
+---
+
+## Phase B Definition of Done Status
+
+- [x] LongBench loader implemented
+- [x] Canonical normalization schema enforced
+- [x] Configurable tokenizer abstraction
+- [x] Deterministic binning
+- [x] Deterministic per-bin sampling
+- [x] manifest.json written
+- [x] SQLite schema (Phase B subset) initialized
+- [x] DAO persistence implemented
+- [x] DB + manifest parity achieved
+
+Phase 2 complete.
+
+
+# Phase 3
+
+FTM:
+
+DONE:
+
+- `engines/base.py`
 
 NOT DONE:
 
 
 
+Engines
+- `engines/openai_compat.py`
+- `engines/endpoints.py`
 
+Run layer
+- `run/orchestrate.py`
+- `run/runner.py`
+- `run/retries.py`
+- `run/telemetry.py`
 
-Also Phase B requires DB support, so you’ll need these in the same phase boundary if they don’t exist yet (still structural Phase B dependency, even though they live under db/):
+DB updates (Phase C schema + DAO surface)
+- `db/schema.py` (extend with Phase C tables/indexes)
+- `db/dao.py` (extend with run/request/response/telemetry ops)
 
-
-- `db/dao.py`
-
+(You should not need to touch Phase B data files for Phase C.)
 
