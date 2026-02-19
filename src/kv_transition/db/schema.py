@@ -103,10 +103,19 @@ def init_schema(conn: sqlite3.Connection) -> None:
             engine_name TEXT,
             base_url TEXT,
             model_name TEXT,
+            prompt_template_version TEXT,
             created_at TEXT,
             FOREIGN KEY (exp_group_id) REFERENCES experiments(exp_group_id)
         )
     """)
+    
+    # Migration: Add prompt_template_version column if it doesn't exist (for existing DBs)
+    try:
+        conn.execute("ALTER TABLE runs ADD COLUMN prompt_template_version TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        # Column already exists, ignore
+        pass
     
     # Requests table
     conn.execute("""

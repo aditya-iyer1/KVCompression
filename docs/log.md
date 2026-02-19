@@ -1097,7 +1097,7 @@ Add/verify these invariants are persisted for every exp_group_id:
 	•	config snapshot (already in experiments.config_yaml) (COMPLETE)
 	•	model + base_url + engine name (in runs)  (COMPLETE)
 	•	prompt_template_version (either runs or experiments)
-	•	dataset_id (COMPLETE) + tokenizer_name + bin_edges (COMPLETE) (already in manifest/DB)
+	•	dataset_id (COMPLETE) + tokenizer_name (COMPLETE) + bin_edges (COMPLETE) (already in manifest/DB)
 
 This is the minimum to guarantee future comparability.
 
@@ -1114,16 +1114,16 @@ This becomes the canonical run you can cite in the report.
 3) Run-to-run comparability & guardrails
 
 Architectural guardrails to prevent silent mismatch:
-	•	refuse to run if dataset_id/task/tokenizer differs from what’s already in DB for that exp_group_id (unless explicit --force)
-	•	refuse to score/analyze/report if required tables are missing for the target run/exp_group_id
+	•	refuse to run if dataset_id/task/tokenizer differs from what’s already in DB for that exp_group_id (unless explicit --force) (COMPLETE)
+	•	refuse to score/analyze/report if required tables are missing for the target run/exp_group_id (COMPLETE)
 
 4) Minimal “Definition of Done” validation suite
 
 Add a small test surface (even if just smoke-level) that asserts:
-	•	prepare → manifest exists + DB tables populated (DONE)
-	•	run → requests/responses counts match manifest entries
-	•	score → scores count matches requests
-	•	analyze → bin_stats exists for all (run_id, bin_idx)
-	•	report → report.md exists and references plot paths that exist
+	•	prepare → manifest exists + DB tables populated (COMPLETE)
+	•	run → requests/responses counts match manifest entries (COMPLETE)
+	•	score → scores count matches requests (COMPLETE)
+	•	analyze → bin_stats exists for all (run_id, bin_idx) (COMPLETE)
+	•	report → report.md exists and references plot paths that exist (COMPLETE)
 
 (Keep these as smoke tests; no performance assertions.)

@@ -554,6 +554,7 @@ def cmd_analyze(config_path: Path, run_id: Optional[str] = None, overrides: Opti
             if not run_meta:
                 print(f"Warning: Run {rid} metadata not found, skipping", file=sys.stderr)
                 continue
+            run_meta = dict(run_meta)
             
             kv_budget = run_meta["kv_budget"]
             
