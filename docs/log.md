@@ -701,8 +701,8 @@ Analysis Layer: (Phase E, immediately after D)
 - `analysis/queries.py` (DONE)
 - `analysis/aggregate.py` (DONE)
 - `analysis/bootstrap.py` (DONE)
-- `analysis/transition.py`
-- `analysis/plots.py`
+- `analysis/transition.py` (DONE)
+- `analysis/plots.py` (DONE)
 
 
 # Phase 6
