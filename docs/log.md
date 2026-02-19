@@ -543,4 +543,33 @@ No structural drift detected.
 
 Phase 3 complete.
 
+# Phase 4
 
+Eval Layer: (Phase D)
+- `eval/metrics.py`
+- `eval/failure_taxonomy.py`
+- `eval/score.py`
+
+# Phase 5
+
+# Phase 6
+
+
+
+Analysis Layer: (Phase E, immediately after D)
+- `analysis/queries.py`
+- `analysis/aggregate.py`
+- `analysis/bootstrap.py`
+- `analysis/transition.py`
+- `analysis/plots.py`
+
+Report Layer: (Phase F)
+- `report/build.py`
+- `report/templates/report.md.jinja`
+
+CLI Wiring: (To expose D/E/F as stages; still consistent with blueprint)
+- `src/kv_transition/cli.py` (add score, analyze, report, all routing)
+
+DB Updated needed for D/E/F tables:
+- `db/schema.py` (extend with D/E/F scores, plus analysis tables bin_stats, transition_summary)
+- `db/dao.py` (extend with write/query ops for the above)
