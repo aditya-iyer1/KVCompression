@@ -140,6 +140,7 @@ DONE:
 - `src/kv_transition/data/manifest.py`
 
 - `db/connect.py`
+- `db/schema.py`
 
 NOT DONE:
 
@@ -149,7 +150,7 @@ NOT DONE:
 
 Also Phase B requires DB support, so you’ll need these in the same phase boundary if they don’t exist yet (still structural Phase B dependency, even though they live under db/):
 
-- `db/schema.py`
+
 - `db/dao.py`
 
 
