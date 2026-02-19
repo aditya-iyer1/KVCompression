@@ -5,6 +5,7 @@ Executes manifest entries for a single KV setting and persists results to DB.
 
 import json
 import sqlite3
+from uuid import uuid4
 from typing import Any, Dict
 
 from ..db import dao
@@ -68,6 +69,29 @@ def run_one_setting(
         run_id: Run identifier.
         kv_budget: KV budget value for this run.
     """
+    # Optional local debug flag for extra logging
+    debug = False
+    
+    # Ensure run row exists once per run
+    exp_group_id = settings["output"]["exp_group_id"]
+    kv_policy = settings.get("kv", {}).get("policy", "unknown")
+    engine_name = "openai_compat"
+    base_url = getattr(engine, "base_url", "")
+    
+    dao.upsert_run(
+        conn=conn,
+        run_id=run_id,
+        exp_group_id=exp_group_id,
+        kv_policy=kv_policy,
+        kv_budget=kv_budget,
+        engine_name=engine_name,
+        base_url=base_url,
+        model_name=model_name,
+    )
+    
+    if debug:
+        print(f"  Debug: run_id={run_id}, kv_budget={kv_budget}, model={model_name}, base_url={base_url}")
+    
     # Identify dataset_id
     dataset_name = settings["dataset"]["name"]
     task = settings["dataset"]["task"]
@@ -107,6 +131,7 @@ def run_one_setting(
     # Process each manifest entry
     for idx, entry in enumerate(manifest_entries):
         example_id = entry["example_id"]
+        entry_idx = entry["entry_idx"]
         
         if example_id not in examples:
             print(f"  Skipping entry {idx}: example_id {example_id} not found")
@@ -119,6 +144,23 @@ def run_one_setting(
         question = example["question"]
         messages = _build_messages(context, question)
         
+        # Generate stable unique IDs
+        request_id = str(uuid4())
+        
+        # Persist request row (what we are about to send to the engine)
+        dao.insert_request(
+            conn=conn,
+            request_id=request_id,
+            run_id=run_id,
+            dataset_id=dataset_id,
+            entry_idx=entry_idx,
+            example_id=example_id,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout_s=timeout_s,
+        )
+        
         # Call engine
         try:
             result = engine.generate(
@@ -126,38 +168,59 @@ def run_one_setting(
                 model=model_name,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                timeout_s=timeout_s
+                timeout_s=timeout_s,
             )
             
             # Extract result data
             text = result.text
             finish_reason = result.finish_reason
-            raw_json = json.dumps(result.raw) if result.raw else None
+            raw = result.raw or {}
             
             # Extract usage
             usage = result.usage or {}
             prompt_tokens = usage.get("prompt_tokens")
             completion_tokens = usage.get("completion_tokens")
+            total_tokens = usage.get("total_tokens")
+            if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+                total_tokens = prompt_tokens + completion_tokens
             
             # Extract timings
             timings = result.timings or {}
             latency_s = timings.get("latency_s")
             
-            # Persist to DB (placeholder - will be implemented in dao.py)
-            # TODO: Call dao.create_request(conn, run_id, entry_id, messages, prompt_tokens, max_tokens, temperature)
-            # TODO: Call dao.create_response(conn, request_id, text, finish_reason, completion_tokens, raw_json)
-            # TODO: Call dao.create_telemetry(conn, request_id, latency_s, ...)
-            # These will be implemented when dao.py is extended with Phase C functions
+            # Persist response row
+            response_id = str(uuid4())
+            dao.insert_response(
+                conn=conn,
+                response_id=response_id,
+                request_id=request_id,
+                text=text,
+                finish_reason=finish_reason,
+                usage=usage,
+                raw=raw,
+            )
             
-            # For now, just log progress
+            # Persist telemetry row
+            telemetry = {
+                "latency_s": latency_s,
+                "ttfb_s": timings.get("ttfb_s"),
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+                "notes": None,
+            }
+            dao.upsert_telemetry(conn, request_id=request_id, telemetry=telemetry)
+            
+            # Progress logging
             if (idx + 1) % 10 == 0 or (idx + 1) == len(manifest_entries):
                 print(f"    Processed {idx + 1}/{len(manifest_entries)} entries")
         
         except Exception as e:
             # Error handling: record failure and continue
             print(f"    Error processing entry {idx} (example_id={example_id}): {e}")
-            # TODO: Call dao.create_failure(conn, request_id, failure_type, message)
-            # This will be implemented when dao.py is extended
+            error_type = type(e).__name__
+            message = str(e)
+            dao.upsert_failure(conn, request_id=request_id, error_type=error_type, message=message)
             continue
     
     print(f"  Completed processing for run_id={run_id}")
