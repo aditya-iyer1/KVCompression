@@ -1,0 +1,38 @@
+# Submission experiment config: SnapKV on LongBench NarrativeQA
+# Pinned configuration for submission/grading with optimized runtime profile
+# No secrets here — set BASE_URL / MODEL_NAME / OPENAI_API_KEY in env (.env via uv).
+
+dataset:
+  name: longbench
+  task: narrativeqa
+  n_per_bin: 2  # Reduced for fast grading runtime
+
+binning:
+  n_bins: 5
+
+model:
+  # Resolved from env by settings.py (fallback allowed).
+  name: ${MODEL_NAME}
+
+engine:
+  # OpenAI-compatible endpoint (OpenAI API, vLLM, SGLang, etc.)
+  base_url: ${BASE_URL}
+  api_key_env: OPENAI_API_KEY
+  request:
+    timeout_s: 90
+
+kv:
+  policy: snapkv
+  budgets: [1.0, 0.5, 0.2]
+
+decoding:
+  temperature: 0
+  max_tokens: 256
+
+output:
+  # Stable identifier for submission experiment
+  exp_group_id: submission_longbench_narrativeqa_v1
+
+db:
+  # Leave as "auto" so paths.py can resolve runs/<exp_group_id>/kv_transition.sqlite
+  path: auto
