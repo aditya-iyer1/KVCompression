@@ -16,6 +16,11 @@ from typing import Any, Dict, List, Optional
 from . import paths
 from .settings import load_settings
 
+from dotenv import load_dotenv
+
+
+load_dotenv()
+
 
 def _parse_overrides(override_args: List[str]) -> Dict[str, Any]:
     """Parse --override KEY=VALUE arguments into nested dict.
@@ -243,6 +248,99 @@ def cmd_prepare(
         
     except Exception as e:
         print(f"Error preparing dataset: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        conn.close()
+        return 2
+
+
+def cmd_run(config_path: Path, overrides: Optional[Dict[str, Any]] = None) -> int:
+    """Run inference over a prepared manifest (Phase C).
+    
+    Loads settings, checks that Phase B artifacts exist, then orchestrates runs.
+    
+    Args:
+        config_path: Path to YAML config file.
+        overrides: Optional config overrides.
+    
+    Returns:
+        Exit code (0 on success, 2 on error).
+    """
+    # 1) Load/validate config
+    try:
+        config = load_settings(config_path, overrides=overrides)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"Error loading config: {e}", file=sys.stderr)
+        return 2
+    
+    # 2) Resolve exp_group_id/run_dir/db_path
+    exp_group_id = config["output"]["exp_group_id"]
+    db_path_cfg = config.get("db", {}).get("path")
+    
+    run_d = paths.run_dir(exp_group_id)
+    db_p = paths.db_path(exp_group_id, db_path_cfg)
+    
+    # Ensure run_dir exists (orchestrate will reuse it)
+    run_d.mkdir(parents=True, exist_ok=True)
+    
+    # 3) Open DB and init schema
+    try:
+        from .db import connect, schema
+        conn = connect.connect(db_p)
+        schema.init_schema(conn)
+    except Exception as e:
+        print(f"Error opening database: {e}", file=sys.stderr)
+        return 2
+    
+    try:
+        # 4) Ensure Phase B preconditions
+        dataset_name = config.get("dataset", {}).get("name")
+        task = config.get("dataset", {}).get("task")
+        
+        if not dataset_name or not task:
+            print("Error: config.dataset.name and config.dataset.task are required", file=sys.stderr)
+            conn.close()
+            return 2
+        
+        dataset_id = f"{dataset_name}__{task}"
+        
+        # Check that dataset exists
+        cursor = conn.execute(
+            "SELECT 1 FROM datasets WHERE dataset_id = ?",
+            (dataset_id,)
+        )
+        if cursor.fetchone() is None:
+            print(
+                "No prepared manifest found; run `kv-transition prepare` first.",
+                file=sys.stderr
+            )
+            conn.close()
+            return 2
+        
+        # Check that manifest_entries exist for this dataset
+        cursor = conn.execute(
+            "SELECT 1 FROM manifest_entries WHERE dataset_id = ? LIMIT 1",
+            (dataset_id,)
+        )
+        if cursor.fetchone() is None:
+            print(
+                "No prepared manifest found; run `kv-transition prepare` first.",
+                file=sys.stderr
+            )
+            conn.close()
+            return 2
+        
+        # Close this connection before orchestration; orchestrate() manages its own conn
+        conn.close()
+        
+        # 5) Call orchestrate(settings) to perform Phase C runs
+        from .run.orchestrate import orchestrate
+        
+        orchestrate(config)
+        return 0
+    
+    except Exception as e:
+        print(f"Error during run: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc()
         conn.close()
@@ -848,6 +946,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Override config value (supports dot-notation, e.g., 'output.exp_group_id=test'). Can be repeated."
     )
     
+    # run command
+    run_parser = subparsers.add_parser(
+        "run",
+        parents=[common_parser],
+        help="Run inference over prepared manifest (Phase C)"
+    )
+    
     # prepare command
     prepare_parser = subparsers.add_parser(
         "prepare",
@@ -946,7 +1051,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 2
     
     # Route to command
-    if args.command == "prepare":
+    if args.command == "run":
+        return cmd_run(args.config, overrides=overrides)
+    elif args.command == "prepare":
         return cmd_prepare(
             args.config,
             split=getattr(args, 'split', 'test'),

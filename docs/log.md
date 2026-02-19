@@ -1094,10 +1094,10 @@ Next steps (architecture-owned)
 1) Lock the “Reproducible Experiment Contract”
 
 Add/verify these invariants are persisted for every exp_group_id:
-	•	config snapshot (already in experiments.config_yaml)
-	•	model + base_url + engine name (in runs)
+	•	config snapshot (already in experiments.config_yaml) (COMPLETE)
+	•	model + base_url + engine name (in runs) 
 	•	prompt_template_version (either runs or experiments)
-	•	dataset_id + tokenizer_name + bin_edges (already in manifest/DB)
+	•	dataset_id (COMPLETE) + tokenizer_name + bin_edges (COMPLETE) (already in manifest/DB)
 
 This is the minimum to guarantee future comparability.
 
@@ -1120,7 +1120,7 @@ Architectural guardrails to prevent silent mismatch:
 4) Minimal “Definition of Done” validation suite
 
 Add a small test surface (even if just smoke-level) that asserts:
-	•	prepare → manifest exists + DB tables populated
+	•	prepare → manifest exists + DB tables populated (DONE)
 	•	run → requests/responses counts match manifest entries
 	•	score → scores count matches requests
 	•	analyze → bin_stats exists for all (run_id, bin_idx)
