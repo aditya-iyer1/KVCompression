@@ -1,0 +1,6 @@
+.venv/
+data/processed/
+runs/
+*.sqlite
+*.db
+.env
