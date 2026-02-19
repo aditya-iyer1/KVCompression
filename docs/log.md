@@ -1095,7 +1095,7 @@ Next steps (architecture-owned)
 
 Add/verify these invariants are persisted for every exp_group_id:
 	•	config snapshot (already in experiments.config_yaml) (COMPLETE)
-	•	model + base_url + engine name (in runs) 
+	•	model + base_url + engine name (in runs)  (COMPLETE)
 	•	prompt_template_version (either runs or experiments)
 	•	dataset_id (COMPLETE) + tokenizer_name + bin_edges (COMPLETE) (already in manifest/DB)
 

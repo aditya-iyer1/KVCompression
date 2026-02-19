@@ -194,10 +194,39 @@ def cmd_prepare(
         # Persist to DB using DAO functions
         from .db import dao
         
-        # Get tokenizer name from manifest
-        tokenizer_name = manifest.get("tokenizer_name")
+        # Get resolved model name from config (fully resolved after env var substitution)
+        model_name = config.get("model", {}).get("name")
+        if not model_name or not model_name.strip():
+            print("Error: config.model.name is required and must be resolved", file=sys.stderr)
+            conn.close()
+            return 2
         
-        # Upsert dataset
+        # Use resolved model name as tokenizer_name (ensure it's not a template placeholder)
+        tokenizer_name = model_name.strip()
+        if tokenizer_name.startswith("${") and tokenizer_name.endswith("}"):
+            print(f"Error: config.model.name appears unresolved: {tokenizer_name}", file=sys.stderr)
+            conn.close()
+            return 2
+        
+        # Check if dataset already exists with a different tokenizer_name
+        cursor = conn.execute(
+            "SELECT tokenizer_name FROM datasets WHERE dataset_id = ?",
+            (dataset_id,)
+        )
+        existing_row = cursor.fetchone()
+        if existing_row and existing_row[0] is not None:
+            existing_tokenizer = existing_row[0]
+            if existing_tokenizer != tokenizer_name:
+                print(
+                    f"Error: Dataset {dataset_id} already exists with tokenizer_name={existing_tokenizer}, "
+                    f"but current config specifies tokenizer_name={tokenizer_name}. "
+                    f"Tokenizer name mismatch detected.",
+                    file=sys.stderr
+                )
+                conn.close()
+                return 2
+        
+        # Upsert dataset with resolved tokenizer_name
         dao.upsert_dataset(conn, dataset_id, dataset_name, task, tokenizer_name)
         
         # Insert examples (from manifest.examples dict)
