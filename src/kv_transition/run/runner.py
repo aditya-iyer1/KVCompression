@@ -268,6 +268,9 @@ def run_one_setting(
             }
             dao.upsert_telemetry(conn, request_id=request_id, telemetry=telemetry)
             
+            # Clean up any existing failure row for this request_id (success overwrites failure)
+            conn.execute("DELETE FROM failures WHERE request_id = ?", (request_id,))
+            
             # Progress logging
             if (idx + 1) % 10 == 0 or (idx + 1) == len(manifest_entries):
                 print(f"    Processed {idx + 1}/{len(manifest_entries)} entries")
