@@ -1101,7 +1101,7 @@ Add/verify these invariants are persisted for every exp_group_id:
 
 This is the minimum to guarantee future comparability.
 
-2) Define the Phase-0 “Submission Run” profile
+2) Define the Phase-0 “Submission Run” profile (COMPLETE)
 
 Create one pinned experiment config intended for grading/submission:
 	•	1 task

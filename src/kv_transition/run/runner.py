@@ -275,9 +275,21 @@ def run_one_setting(
         except Exception as e:
             # Error handling: record failure and continue
             print(f"    Error processing entry {idx} (example_id={example_id}): {e}")
-            error_type = type(e).__name__
-            message = str(e)
-            dao.upsert_failure(conn, request_id=request_id, error_type=error_type, message=message)
+            
+            # Check if response already exists for this request_id
+            # If it does, skip recording failure to avoid inconsistent state
+            cursor = conn.execute(
+                "SELECT 1 FROM responses WHERE request_id = ?",
+                (request_id,)
+            )
+            response_exists = cursor.fetchone() is not None
+            
+            if not response_exists:
+                # Only record failure if no response was persisted
+                error_type = type(e).__name__
+                message = str(e)
+                dao.upsert_failure(conn, request_id=request_id, error_type=error_type, message=message)
+            
             continue
     
     print(f"  Completed processing for run_id={run_id}")
