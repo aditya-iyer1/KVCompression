@@ -3,8 +3,11 @@
 Executes manifest entries for a single KV setting and persists results to DB.
 """
 
+import hashlib
+import inspect
 import json
 import sqlite3
+from datetime import datetime
 from uuid import uuid4
 from typing import Any, Dict
 
@@ -25,6 +28,20 @@ def _compute_dataset_id(dataset_name: str, task: str) -> str:
         Dataset ID string.
     """
     return f"{dataset_name}__{task}"
+
+
+def _compute_prompt_template_version() -> str:
+    """Compute deterministic hash of prompt template builder function.
+    
+    Uses SHA-256 hash of the source code of _build_messages to create
+    a stable version identifier for the prompt template.
+    
+    Returns:
+        First 12 characters of SHA-256 hex digest (deterministic prefix).
+    """
+    source = inspect.getsource(_build_messages)
+    hash_obj = hashlib.sha256(source.encode('utf-8'))
+    return hash_obj.hexdigest()[:12]
 
 
 def _build_messages(context: str, question: str) -> list[Dict[str, str]]:
@@ -72,22 +89,48 @@ def run_one_setting(
     # Optional local debug flag for extra logging
     debug = False
     
+    # Compute prompt template version hash
+    prompt_template_version = _compute_prompt_template_version()
+    
     # Ensure run row exists once per run
     exp_group_id = settings["output"]["exp_group_id"]
     kv_policy = settings.get("kv", {}).get("policy", "unknown")
     engine_name = "openai_compat"
     base_url = getattr(engine, "base_url", "")
     
-    dao.upsert_run(
-        conn=conn,
-        run_id=run_id,
-        exp_group_id=exp_group_id,
-        kv_policy=kv_policy,
-        kv_budget=kv_budget,
-        engine_name=engine_name,
-        base_url=base_url,
-        model_name=model_name,
+    # Check if run already exists and validate prompt_template_version
+    cursor = conn.execute(
+        "SELECT prompt_template_version FROM runs WHERE run_id = ?",
+        (run_id,)
     )
+    existing_row = cursor.fetchone()
+    
+    if existing_row:
+        existing_version = existing_row[0]
+        if existing_version is not None and existing_version != prompt_template_version:
+            raise ValueError(
+                f"Run {run_id} already exists with prompt_template_version={existing_version}, "
+                f"but current code computes version={prompt_template_version}. "
+                f"Prompt template has changed; aborting to prevent inconsistent data."
+            )
+    
+    # Upsert run with prompt_template_version (using direct SQL since dao.upsert_run doesn't support it)
+    with conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO runs
+            (run_id, exp_group_id, kv_policy, kv_budget, engine_name, base_url, model_name, prompt_template_version, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            run_id,
+            exp_group_id,
+            kv_policy,
+            kv_budget,
+            engine_name,
+            base_url,
+            model_name,
+            prompt_template_version,
+            datetime.utcnow().isoformat()
+        ))
     
     if debug:
         print(f"  Debug: run_id={run_id}, kv_budget={kv_budget}, model={model_name}, base_url={base_url}")
