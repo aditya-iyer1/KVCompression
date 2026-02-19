@@ -546,14 +546,11 @@ Phase 3 complete.
 # Phase 4
 
 Eval Layer: (Phase D)
-- `eval/metrics.py`
-- `eval/failure_taxonomy.py`
+- `eval/metrics.py` (DONE)
+- `eval/failure_taxonomy.py` (DONE)
 - `eval/score.py`
 
 # Phase 5
-
-# Phase 6
-
 
 
 Analysis Layer: (Phase E, immediately after D)
@@ -562,6 +559,9 @@ Analysis Layer: (Phase E, immediately after D)
 - `analysis/bootstrap.py`
 - `analysis/transition.py`
 - `analysis/plots.py`
+
+
+# Phase 6
 
 Report Layer: (Phase F)
 - `report/build.py`
