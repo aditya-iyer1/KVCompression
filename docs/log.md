@@ -893,8 +893,8 @@ Phase 5 complete.
 # Phase F
 
 Report layer
-- `report/build.py`
-- `report/templates/report.md.jinja`
+- `report/build.py` (DONE)
+- `report/templates/report.md.jinja` (DONE)
 
 CLI exposure (Phase F routing + “all” pipeline)
 - `src/kv_transition/cli.py` (add report and all commands)
