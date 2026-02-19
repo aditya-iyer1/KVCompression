@@ -37,6 +37,12 @@ def connect(db_path: Union[str, Path]) -> sqlite3.Connection:
     # Set row_factory for ergonomic queries (returns Row objects)
     conn.row_factory = sqlite3.Row
     
+    # Initialize schema automatically (idempotent: uses CREATE TABLE IF NOT EXISTS)
+    # This ensures schema is always present, preventing errors from missing tables.
+    # Import here to avoid circular dependency (schema.py doesn't import connect.py).
+    from .schema import init_schema
+    init_schema(conn)
+    
     return conn
 
 

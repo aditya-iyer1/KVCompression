@@ -7,7 +7,9 @@ Phase F: Report generation.
 """
 
 import argparse
+import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -54,6 +56,28 @@ def _parse_overrides(override_args: List[str]) -> Dict[str, Any]:
     return overrides
 
 
+def _get_git_hash() -> Optional[str]:
+    """Get current git commit hash if available.
+    
+    Returns:
+        Git commit hash string, or None if git is not available or not in a git repo.
+    """
+    try:
+        repo_root = paths.repo_root()
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (subprocess.SubprocessError, FileNotFoundError, RuntimeError):
+        pass
+    return None
+
+
 def _print_config(config: Dict[str, Any]) -> None:
     """Print merged config as YAML to stdout."""
     try:
@@ -66,6 +90,163 @@ def _print_config(config: Dict[str, Any]) -> None:
         import json
         print_config = {k: v for k, v in config.items() if not k.startswith("_")}
         json.dump(print_config, sys.stdout, indent=2)
+
+
+def cmd_prepare(
+    config_path: Path,
+    split: str = "test",
+    cache_dir: Optional[str] = None,
+    notes: Optional[str] = None,
+    overrides: Optional[Dict[str, Any]] = None
+) -> int:
+    """Prepare dataset: load, normalize, bin, and persist manifest (Phase B).
+    
+    Loads raw examples, builds manifest, and persists to database and manifest.json.
+    
+    Args:
+        config_path: Path to YAML config file.
+        split: Dataset split to load (default: "test").
+        cache_dir: Optional cache directory for dataset loader.
+        notes: Optional notes string to store in experiments.notes.
+        overrides: Optional config overrides.
+    
+    Returns:
+        Exit code (0 on success, 2 on error).
+    """
+    try:
+        config = load_settings(config_path, overrides=overrides)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"Error loading config: {e}", file=sys.stderr)
+        return 2
+    
+    exp_group_id = config["output"]["exp_group_id"]
+    db_path_cfg = config.get("db", {}).get("path")
+    
+    # Resolve paths
+    run_d = paths.run_dir(exp_group_id)
+    db_p = paths.db_path(exp_group_id, db_path_cfg)
+    
+    # Ensure run_dir exists
+    run_d.mkdir(parents=True, exist_ok=True)
+    
+    # Open DB and init schema
+    try:
+        from .db import connect, schema
+        conn = connect.connect(db_p)
+        schema.init_schema(conn)
+    except Exception as e:
+        print(f"Error opening database: {e}", file=sys.stderr)
+        return 2
+    
+    try:
+        # Dump config as YAML (remove internal keys)
+        try:
+            import yaml
+            config_for_yaml = {k: v for k, v in config.items() if not k.startswith("_")}
+            config_yaml = yaml.dump(config_for_yaml, default_flow_style=False, sort_keys=False)
+        except ImportError:
+            import json
+            config_for_yaml = {k: v for k, v in config.items() if not k.startswith("_")}
+            config_yaml = json.dumps(config_for_yaml, indent=2)
+        
+        # Get git hash
+        git_hash = _get_git_hash()
+        
+        # Upsert experiments row
+        created_at = datetime.utcnow().isoformat()
+        conn.execute("""
+            INSERT OR REPLACE INTO experiments
+            (exp_group_id, created_at, config_yaml, git_hash, notes)
+            VALUES (?, ?, ?, ?, ?)
+        """, (exp_group_id, created_at, config_yaml, git_hash, notes))
+        conn.commit()
+        
+        # Derive dataset_id from config (same convention as manifest._compute_dataset_id)
+        dataset_name = config.get("dataset", {}).get("name")
+        task = config.get("dataset", {}).get("task")
+        
+        if not dataset_name or not task:
+            print("Error: config.dataset.name and config.dataset.task are required", file=sys.stderr)
+            conn.close()
+            return 2
+        
+        dataset_id = f"{dataset_name}__{task}"
+        
+        # Load raw examples
+        from .data.longbench_loader import load_longbench
+        
+        cache_dir_path = Path(cache_dir) if cache_dir else None
+        raw_examples = load_longbench(task=task, cache_dir=cache_dir_path, split=split)
+        
+        # Build manifest
+        from .data.manifest import build_manifest, write_manifest
+        
+        manifest = build_manifest(config, raw_examples)
+        
+        # Write manifest.json
+        manifest_path_obj = write_manifest(manifest, dataset_id)
+        
+        # Persist to DB using DAO functions
+        from .db import dao
+        
+        # Get tokenizer name from manifest
+        tokenizer_name = manifest.get("tokenizer_name")
+        
+        # Upsert dataset
+        dao.upsert_dataset(conn, dataset_id, dataset_name, task, tokenizer_name)
+        
+        # Insert examples (from manifest.examples dict)
+        # Build token_len lookup from entries
+        token_len_lookup = {entry["example_id"]: entry["token_len"] for entry in manifest["entries"]}
+        
+        examples_list = []
+        for example_id, ex_data in manifest["examples"].items():
+            token_len = token_len_lookup.get(example_id, 0)
+            
+            examples_list.append({
+                "example_id": example_id,
+                "question": ex_data["question"],
+                "context": ex_data["context"],
+                "answers": ex_data["answers"],
+                "meta": ex_data["meta"],
+                "token_len": token_len
+            })
+        
+        dao.insert_examples(conn, dataset_id, examples_list)
+        
+        # Insert bins
+        bin_edges = manifest["bin_edges"]
+        # Count examples per bin
+        n_examples_per_bin: Dict[int, int] = {}
+        for entry in manifest["entries"]:
+            bin_idx = entry["bin_idx"]
+            n_examples_per_bin[bin_idx] = n_examples_per_bin.get(bin_idx, 0) + 1
+        
+        dao.insert_bins(conn, dataset_id, bin_edges, n_examples_per_bin)
+        
+        # Insert manifest entries
+        dao.insert_manifest_entries(conn, dataset_id, manifest["entries"])
+        
+        conn.commit()
+        
+        # Print success summary
+        n_examples = len(examples_list)
+        print(f"Prepared dataset:")
+        print(f"  exp_group_id: {exp_group_id}")
+        print(f"  db_path: {db_p}")
+        print(f"  dataset_id: {dataset_id}")
+        print(f"  n_examples: {n_examples}")
+        print(f"  manifest: {manifest_path_obj}")
+        
+        conn.close()
+        return 0
+        
+    except Exception as e:
+        print(f"Error preparing dataset: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        conn.close()
+        return 2
 
 
 def cmd_resolve(config_path: Path, overrides: Optional[Dict[str, Any]] = None) -> int:
@@ -667,6 +848,29 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Override config value (supports dot-notation, e.g., 'output.exp_group_id=test'). Can be repeated."
     )
     
+    # prepare command
+    prepare_parser = subparsers.add_parser(
+        "prepare",
+        parents=[common_parser],
+        help="Prepare dataset: load, normalize, bin, and persist manifest (Phase B)"
+    )
+    prepare_parser.add_argument(
+        "--split",
+        type=str,
+        default="test",
+        help='Dataset split to load (default: "test")'
+    )
+    prepare_parser.add_argument(
+        "--cache-dir",
+        type=str,
+        help="Optional cache directory for dataset loader"
+    )
+    prepare_parser.add_argument(
+        "--notes",
+        type=str,
+        help="Optional notes string to store in experiments.notes"
+    )
+    
     # resolve command
     resolve_parser = subparsers.add_parser(
         "resolve",
@@ -742,7 +946,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 2
     
     # Route to command
-    if args.command == "resolve":
+    if args.command == "prepare":
+        return cmd_prepare(
+            args.config,
+            split=getattr(args, 'split', 'test'),
+            cache_dir=getattr(args, 'cache_dir', None),
+            notes=getattr(args, 'notes', None),
+            overrides=overrides
+        )
+    elif args.command == "resolve":
         return cmd_resolve(args.config, overrides=overrides)
     elif args.command == "validate":
         return cmd_validate(args.config, overrides=overrides, print_config_flag=getattr(args, 'print_config', False))

@@ -1074,3 +1074,56 @@ All stages are:
 - Cleanly separated
 
 The blueprint is fully realized.
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Pass 2
+
+Next steps (architecture-owned)
+
+1) Lock the “Reproducible Experiment Contract”
+
+Add/verify these invariants are persisted for every exp_group_id:
+	•	config snapshot (already in experiments.config_yaml)
+	•	model + base_url + engine name (in runs)
+	•	prompt_template_version (either runs or experiments)
+	•	dataset_id + tokenizer_name + bin_edges (already in manifest/DB)
+
+This is the minimum to guarantee future comparability.
+
+2) Define the Phase-0 “Submission Run” profile
+
+Create one pinned experiment config intended for grading/submission:
+	•	1 task
+	•	n_bins=5
+	•	budgets=[1.0, 0.5, 0.2]
+	•	n_per_bin small enough for runtime
+	•	temperature=0
+This becomes the canonical run you can cite in the report.
+
+3) Run-to-run comparability & guardrails
+
+Architectural guardrails to prevent silent mismatch:
+	•	refuse to run if dataset_id/task/tokenizer differs from what’s already in DB for that exp_group_id (unless explicit --force)
+	•	refuse to score/analyze/report if required tables are missing for the target run/exp_group_id
+
+4) Minimal “Definition of Done” validation suite
+
+Add a small test surface (even if just smoke-level) that asserts:
+	•	prepare → manifest exists + DB tables populated
+	•	run → requests/responses counts match manifest entries
+	•	score → scores count matches requests
+	•	analyze → bin_stats exists for all (run_id, bin_idx)
+	•	report → report.md exists and references plot paths that exist
+
+(Keep these as smoke tests; no performance assertions.)

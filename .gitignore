@@ -4,3 +4,5 @@ runs/
 *.sqlite
 *.db
 .env
+*__pycache__/
+*.291.egg-info/
