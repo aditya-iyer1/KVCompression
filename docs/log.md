@@ -698,9 +698,9 @@ Phase 4 complete.
 
 
 Analysis Layer: (Phase E, immediately after D)
-- `analysis/queries.py`
-- `analysis/aggregate.py`
-- `analysis/bootstrap.py`
+- `analysis/queries.py` (DONE)
+- `analysis/aggregate.py` (DONE)
+- `analysis/bootstrap.py` (DONE)
 - `analysis/transition.py`
 - `analysis/plots.py`
 
@@ -712,7 +712,7 @@ Report Layer: (Phase F)
 - `report/templates/report.md.jinja`
 
 CLI Wiring: (To expose D/E/F as stages; still consistent with blueprint)
-- `src/kv_transition/cli.py` (add analyze command routing only; no report yet unless you’re merging Phase F next)
+- `src/kv_transition/cli.py` (add score, analyze, report, all routing)
 
 DB Updated needed for D/E/F tables:
 - `db/schema.py` (extend with bin_stats, transition_summary tables + indexes)
