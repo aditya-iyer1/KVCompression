@@ -307,6 +307,7 @@ Engines:
 Run Layer:
 - `run/orchestrate.py`
 - `run/runner.py`
+- `run/retries.py`
 
 
 NOT DONE:
@@ -314,7 +315,7 @@ NOT DONE:
 Run layer
 
 
-- `run/retries.py`
+
 - `run/telemetry.py`
 
 DB updates (Phase C schema + DAO surface)
