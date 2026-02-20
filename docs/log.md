@@ -1364,7 +1364,7 @@ Steps
 	•	3 medium-context
 	•	4 long-context stressors
 	•	Pin it as config/experiments/sanity.yaml with n_bins=1 (or 2), budgets=[1.0, 0.2].
-2.	Behavioral assertions (manual, deterministic)
+2.	Behavioral assertions (manual, deterministic) (COMPLETE)
 	•	For each example: record baseline (budget=1.0) output + score once.
 	•	Re-run with budget=0.2 and check:
 	•	scores should not increase systematically
@@ -1393,18 +1393,18 @@ Goal
 Ensure every blueprint promise is implemented and coherent as a system.
 
 Steps
-1.	CLI contract audit
+1.	CLI contract audit (COMPLETE)
 	•	Confirm CLI supports the full intended flow:
 	•	prepare, run, score, analyze, report, all
 	•	Confirm exit codes + error messages are stable across all commands.
-2.	Artifact contract audit
+2.	Artifact contract audit (COMPLETE)
 	•	For a fresh run group, verify artifacts are exactly:
 	•	manifest.json
 	•	kv_transition.sqlite
 	•	plots/*.png
 	•	report.md
 	•	No hidden dependencies on local caches beyond Phase B loader cache.
-3.	DB schema completeness check
+3.	DB schema completeness check (COMPLETE)
 	•	Verify schema includes every table the pipeline uses, and no orphan tables exist.
 	•	Confirm required indexes for Phase E queries.
 
