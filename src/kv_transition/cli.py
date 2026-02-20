@@ -1022,18 +1022,21 @@ def cmd_sample(
 
 
 def cmd_all(config_path: Path, run_id: Optional[str] = None, allow_partial: bool = False, overrides: Optional[Dict[str, Any]] = None) -> int:
-    """Run complete pipeline: score → analyze → report (Phase D→E→F).
+    """Run complete pipeline: prepare → run → score → analyze → report (Phase B→C→D→E→F).
     
-    Executes scoring, analysis, and report generation in sequence without re-running inference.
+    Executes the full pipeline from dataset preparation through report generation.
+    Skips prepare if dataset already exists.
     
     Args:
         config_path: Path to YAML config file.
         run_id: Optional specific run_id. If omitted, processes all runs for exp_group_id.
+        allow_partial: If True, allow report generation even if some prerequisites are missing.
         overrides: Optional config overrides.
     
     Returns:
         Exit code (0 on success, 2 on error).
     """
+    # Load config once for the entire pipeline
     try:
         config = load_settings(config_path, overrides=overrides)
     except (FileNotFoundError, ValueError) as e:
@@ -1044,22 +1047,77 @@ def cmd_all(config_path: Path, run_id: Optional[str] = None, allow_partial: bool
     db_path_cfg = config.get("db", {}).get("path")
     db_p = paths.db_path(exp_group_id, db_path_cfg)
     
-    # Get analysis seed from settings
-    seed = config.get("analysis", {}).get("seed", 1337)
-    drop_threshold = config.get("analysis", {}).get("drop_threshold", 0.15)
+    # ===== Phase B: Prepare (if needed) =====
+    # Check if dataset is already prepared
+    dataset_name = config.get("dataset", {}).get("name")
+    task = config.get("dataset", {}).get("task")
     
-    # Open DB and init schema once
-    try:
-        from .db import connect, schema, dao
-        conn = connect.connect(db_p)
-        schema.init_schema(conn)
-    except Exception as e:
-        print(f"Error opening database: {e}", file=sys.stderr)
+    if not dataset_name or not task:
+        print("Error: config.dataset.name and config.dataset.task are required", file=sys.stderr)
         return 2
     
+    dataset_id = f"{dataset_name}__{task}"
+    
+    # Check if dataset exists (open DB temporarily)
+    dataset_exists = False
+    manifest_exists = False
+    
     try:
-        # Get run_ids to process
+        from .db import connect, schema
+        conn = connect.connect(db_p)
+        schema.init_schema(conn)
+        
+        # Check if dataset exists
+        cursor = conn.execute("SELECT 1 FROM datasets WHERE dataset_id = ?", (dataset_id,))
+        dataset_exists = cursor.fetchone() is not None
+        
+        # Check if manifest_entries exist
+        cursor = conn.execute("SELECT 1 FROM manifest_entries WHERE dataset_id = ? LIMIT 1", (dataset_id,))
+        manifest_exists = cursor.fetchone() is not None
+        
+        conn.close()
+        conn = None
+    except Exception:
+        # DB doesn't exist or error - dataset doesn't exist, will prepare
+        if conn:
+            conn.close()
+        conn = None
+    
+    try:
+        
+        if not dataset_exists or not manifest_exists:
+            print("Phase B: Preparing dataset...")
+            prepare_exit_code = cmd_prepare(
+                config_path,
+                split="test",  # Default split
+                cache_dir=None,
+                notes=None,
+                overrides=overrides
+            )
+            if prepare_exit_code != 0:
+                print(f"Error: Prepare phase failed with exit code {prepare_exit_code}", file=sys.stderr)
+                return prepare_exit_code
+        else:
+            print("Phase B: Dataset already prepared, skipping")
+        
+        # ===== Phase C: Run inference =====
+        print("Phase C: Running inference...")
+        run_exit_code = cmd_run(config_path, overrides=overrides)
+        if run_exit_code != 0:
+            print(f"Error: Run phase failed with exit code {run_exit_code}", file=sys.stderr)
+            return run_exit_code
+        
+        # Reopen DB for remaining phases
+        from .db import dao
+        conn = connect.connect(db_p)
+        schema.init_schema(conn)
+        
+        # Get run_ids to process (now that runs exist)
         run_ids = _get_run_ids(conn, exp_group_id, run_id)
+        
+        # Get analysis seed from settings
+        seed = config.get("analysis", {}).get("seed", 1337)
+        drop_threshold = config.get("analysis", {}).get("drop_threshold", 0.15)
         
         # ===== Phase D: Score =====
         print("Phase D: Scoring runs...")
@@ -1193,21 +1251,25 @@ def cmd_all(config_path: Path, run_id: Optional[str] = None, allow_partial: bool
         
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
-        conn.close()
+        if conn:
+            conn.close()
         return 2
     except ImportError as e:
         print(f"Error: {e}", file=sys.stderr)
-        conn.close()
+        if conn:
+            conn.close()
         return 2
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
-        conn.close()
+        if conn:
+            conn.close()
         return 2
     except Exception as e:
         print(f"Unexpected error: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc()
-        conn.close()
+        if conn:
+            conn.close()
         return 2
 
 

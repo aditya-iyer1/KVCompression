@@ -1370,7 +1370,7 @@ Steps
 	•	scores should not increase systematically
 	•	failures should not appear in short contexts unless serving issues
 	•	If you see counterintuitive improvements: flag as “metric/task mismatch” or “prompt leakage.”
-3.	Metric validity spot-check
+3.	Metric validity spot-check (COMPLETE)
 	•	Sample 10 random rows per run:
 	•	compare raw output vs gold by eyeballing
 	•	confirm EM/F1 aligns with human judgment (at least directionally)
