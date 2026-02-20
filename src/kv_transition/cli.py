@@ -665,6 +665,28 @@ def cmd_analyze(config_path: Path, run_id: Optional[str] = None, overrides: Opti
         return 2
 
 
+# ===== Dev Verification =====
+# To test prerequisite validation locally:
+#
+# 1. Incomplete run group (strict mode should fail):
+#    - Create a run group: `uv run python -m kv_transition prepare -c config/experiments/sanity.yaml`
+#    - Run inference: `uv run python -m kv_transition run -c config/experiments/sanity.yaml`
+#    - Score: `uv run python -m kv_transition score -c config/experiments/sanity.yaml`
+#    - Delete plots directory: `rm -r runs/<exp_group_id>/plots/`
+#    - Run report: `uv run python -m kv_transition report -c config/experiments/sanity.yaml`
+#    - Expected: Exit code 2, error listing missing plots directory and plot files
+#
+# 2. Incomplete run group (--allow-partial should succeed with warning):
+#    - Same setup as above (plots directory deleted)
+#    - Run report: `uv run python -m kv_transition report --allow-partial -c config/experiments/sanity.yaml`
+#    - Expected: Exit code 0, warning banner listing missing items, report generated
+#
+# 3. Complete run group (should succeed without warnings):
+#    - Full pipeline: `uv run python -m kv_transition all -c config/experiments/sanity.yaml`
+#    - Run report: `uv run python -m kv_transition report -c config/experiments/sanity.yaml`
+#    - Expected: Exit code 0, no warnings, report generated successfully
+# ===== End Dev Verification =====
+
 def _validate_report_prerequisites(
     exp_group_id: str,
     db_path: Path,
@@ -770,10 +792,12 @@ def cmd_report(config_path: Path, allow_partial: bool = False, overrides: Option
             print(f"  - {item}", file=sys.stderr)
         print("", file=sys.stderr)
         print("To fix:", file=sys.stderr)
+        # Use actual config path in the suggested command
+        config_str = str(config_path)
         if any("bin_stats" in item or "analyze" in item.lower() for item in missing):
-            print("  Run: uv run python -m kv_transition analyze -c <config>", file=sys.stderr)
+            print(f"  Run: uv run python -m kv_transition analyze -c {config_str}", file=sys.stderr)
         if any("plot" in item.lower() for item in missing):
-            print("  Run: uv run python -m kv_transition analyze -c <config> (generates plots)", file=sys.stderr)
+            print(f"  Run: uv run python -m kv_transition analyze -c {config_str} (generates plots)", file=sys.stderr)
         print("", file=sys.stderr)
         print("Or use --allow-partial to generate a partial report.", file=sys.stderr)
         return 2

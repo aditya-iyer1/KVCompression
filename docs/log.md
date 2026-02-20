@@ -1488,10 +1488,10 @@ Steps
 	•	max_tokens extremely small (forces truncation)
 	•	empty/very-short context examples (if dataset allows)
 2.	Integrity invariants enforced everywhere
-	•	Hard fail analyze/report if prerequisites missing:
+	•	Hard fail analyze/report if prerequisites missing (COMPLETE)
 	•	analyze requires scores for all requests (or explicit partial mode)
 	•	report requires bin_stats + plots (or degrade gracefully with warning)
-	•	Ensure report clearly labels “partial run” if not complete.
+	•	Ensure report clearly labels “partial run” if not complete. (COMPLETE)
 3.	Failure taxonomy expansion guard
 	•	Confirm taxonomy is stable and doesn’t over-classify.
 	•	Add a “UNKNOWN_FAILURE” bucket instead of guessing.
