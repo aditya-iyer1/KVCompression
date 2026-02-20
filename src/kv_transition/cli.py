@@ -11,6 +11,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+import random
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import paths
@@ -841,6 +842,185 @@ def cmd_report(config_path: Path, allow_partial: bool = False, overrides: Option
         return 2
 
 
+def _truncate_text(text: Optional[str], max_len: int = 500) -> str:
+    """Truncate text to max length with ellipsis."""
+    if text is None:
+        return "N/A"
+    if len(text) <= max_len:
+        return text
+    return text[:max_len] + "..."
+
+
+def cmd_sample(
+    config_path: Path,
+    n: int = 10,
+    seed: int = 1337,
+    budget: Optional[float] = None,
+    bin_idx: Optional[int] = None,
+    overrides: Optional[Dict[str, Any]] = None
+) -> int:
+    """Sample and print examples from the database.
+    
+    Prints a deterministic, human-readable sample of (prompt/context metadata,
+    model output, gold answer, and score) from the SQLite DB.
+    
+    Args:
+        config_path: Path to YAML config file.
+        n: Number of examples to sample (default: 10).
+        seed: Random seed for deterministic sampling (default: 1337).
+        budget: Optional KV budget filter.
+        bin_idx: Optional bin index filter.
+        overrides: Optional config overrides.
+    
+    Returns:
+        Exit code (0 on success, 2 on error).
+    """
+    try:
+        config = load_settings(config_path, overrides=overrides)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"Error loading config: {e}", file=sys.stderr)
+        return 2
+    
+    exp_group_id = config["output"]["exp_group_id"]
+    db_path_cfg = config.get("db", {}).get("path")
+    db_p = paths.db_path(exp_group_id, db_path_cfg)
+    
+    # Open DB and init schema
+    try:
+        from .db import connect, schema
+        conn = connect.connect(db_p)
+        schema.init_schema(conn)
+    except Exception as e:
+        print(f"Error opening database: {e}", file=sys.stderr)
+        return 2
+    
+    try:
+        # Build query with filters
+        query = """
+            SELECT 
+                r.request_id,
+                r.run_id,
+                ru.kv_budget,
+                me.bin_idx,
+                t.prompt_tokens,
+                t.completion_tokens,
+                res.text as response_text,
+                ex.answers_json,
+                s.em,
+                s.f1,
+                f.error_type as failure_type
+            FROM requests r
+            JOIN runs ru ON r.run_id = ru.run_id
+            LEFT JOIN manifest_entries me ON r.dataset_id = me.dataset_id AND r.entry_idx = me.entry_idx
+            LEFT JOIN telemetry t ON r.request_id = t.request_id
+            LEFT JOIN responses res ON r.request_id = res.request_id
+            LEFT JOIN examples ex ON r.example_id = ex.example_id
+            LEFT JOIN scores s ON r.request_id = s.request_id
+            LEFT JOIN failures f ON r.request_id = f.request_id
+            WHERE ru.exp_group_id = ?
+        """
+        params = [exp_group_id]
+        
+        if budget is not None:
+            query += " AND ru.kv_budget = ?"
+            params.append(budget)
+        
+        if bin_idx is not None:
+            query += " AND me.bin_idx = ?"
+            params.append(bin_idx)
+        
+        query += " ORDER BY r.request_id"
+        
+        cursor = conn.execute(query, params)
+        rows = cursor.fetchall()
+        
+        if not rows:
+            print(f"No examples found for exp_group_id '{exp_group_id}'", file=sys.stderr)
+            if budget is not None:
+                print(f"  with budget={budget}", file=sys.stderr)
+            if bin_idx is not None:
+                print(f"  with bin_idx={bin_idx}", file=sys.stderr)
+            conn.close()
+            return 2
+        
+        # Deterministic sampling
+        random.seed(seed)
+        sampled_rows = random.sample(rows, min(n, len(rows)))
+        
+        # Print samples
+        import json
+        
+        def _get_row_value(row, key, default=None):
+            """Safely get value from Row object."""
+            try:
+                return row[key] if key in row.keys() else default
+            except (KeyError, TypeError, AttributeError):
+                return default
+        
+        for i, row in enumerate(sampled_rows, 1):
+            request_id = _get_row_value(row, "request_id", "N/A")
+            kv_budget = _get_row_value(row, "kv_budget")
+            bin_idx_val = _get_row_value(row, "bin_idx")
+            prompt_tokens = _get_row_value(row, "prompt_tokens")
+            completion_tokens = _get_row_value(row, "completion_tokens")
+            response_text = _get_row_value(row, "response_text")
+            answers_json = _get_row_value(row, "answers_json")
+            em = _get_row_value(row, "em")
+            f1 = _get_row_value(row, "f1")
+            failure_type = _get_row_value(row, "failure_type")
+            
+            # Parse gold answers
+            gold_answer = "N/A"
+            if answers_json:
+                try:
+                    answers = json.loads(answers_json)
+                    if isinstance(answers, list) and answers:
+                        gold_answer = answers[0]  # Use first answer
+                    elif isinstance(answers, str):
+                        gold_answer = answers
+                except (json.JSONDecodeError, TypeError):
+                    gold_answer = str(answers_json)[:100]  # Fallback
+            
+            # Determine main score (prefer EM, fallback to F1)
+            main_score = "N/A"
+            if em is not None:
+                main_score = f"EM={em:.3f}"
+            elif f1 is not None:
+                main_score = f"F1={f1:.3f}"
+            
+            # Failure status
+            failure_status = failure_type if failure_type else "OK"
+            
+            # Print formatted block
+            print(f"\n{'='*80}")
+            print(f"Sample {i}/{len(sampled_rows)}")
+            print(f"{'='*80}")
+            print(f"request_id: {request_id}")
+            print(f"budget: {kv_budget if kv_budget is not None else 'N/A'}")
+            print(f"bin_idx: {bin_idx_val if bin_idx_val is not None else 'N/A'}")
+            if prompt_tokens is not None:
+                print(f"prompt_tokens: {prompt_tokens}")
+            if completion_tokens is not None:
+                print(f"completion_tokens: {completion_tokens}")
+            print(f"score: {main_score}")
+            print(f"failure: {failure_status}")
+            print(f"\nModel Output:")
+            print(_truncate_text(response_text))
+            print(f"\nGold Answer:")
+            print(_truncate_text(gold_answer))
+            print()
+        
+        conn.close()
+        return 0
+        
+    except Exception as e:
+        print(f"Error sampling examples: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        conn.close()
+        return 2
+
+
 def cmd_all(config_path: Path, run_id: Optional[str] = None, allow_partial: bool = False, overrides: Optional[Dict[str, Any]] = None) -> int:
     """Run complete pipeline: score → analyze → report (Phase D→E→F).
     
@@ -1182,6 +1362,36 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Allow report generation even if some prerequisites are missing (prints warnings)"
     )
     
+    # sample command
+    sample_parser = subparsers.add_parser(
+        "sample",
+        parents=[common_parser],
+        help="Sample and print examples from the database"
+    )
+    sample_parser.add_argument(
+        "--n",
+        type=int,
+        default=10,
+        help="Number of examples to sample (default: 10)"
+    )
+    sample_parser.add_argument(
+        "--seed",
+        type=int,
+        default=1337,
+        help="Random seed for deterministic sampling (default: 1337)"
+    )
+    sample_parser.add_argument(
+        "--budget",
+        type=float,
+        help="Filter by KV budget (e.g., 1.0, 0.5, 0.2)"
+    )
+    sample_parser.add_argument(
+        "--bin",
+        type=int,
+        dest="bin_idx",
+        help="Filter by bin index"
+    )
+    
     # all command
     all_parser = subparsers.add_parser(
         "all",
@@ -1232,6 +1442,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_analyze(args.config, run_id=getattr(args, 'run_id', None), overrides=overrides)
     elif args.command == "report":
         return cmd_report(args.config, allow_partial=getattr(args, 'allow_partial', False), overrides=overrides)
+    elif args.command == "sample":
+        return cmd_sample(
+            args.config,
+            n=getattr(args, 'n', 10),
+            seed=getattr(args, 'seed', 1337),
+            budget=getattr(args, 'budget', None),
+            bin_idx=getattr(args, 'bin_idx', None),
+            overrides=overrides
+        )
     elif args.command == "all":
         return cmd_all(args.config, run_id=getattr(args, 'run_id', None), allow_partial=getattr(args, 'allow_partial', False), overrides=overrides)
     else:
