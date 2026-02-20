@@ -1358,7 +1358,7 @@ Goal
 Prove the harness is measuring real degradation/instability (not artifacts, false positives, or false negatives).
 
 Steps
-1.	Golden sanity set (CREATED)
+1.	Golden sanity set (IN PROGRESS) 
 	•	Create a tiny fixed set (≈10 examples) with known expected behavior:
 	•	3 short-context “easy wins”
 	•	3 medium-context
@@ -1489,9 +1489,9 @@ Steps
 	•	empty/very-short context examples (if dataset allows)
 2.	Integrity invariants enforced everywhere
 	•	Hard fail analyze/report if prerequisites missing (COMPLETE)
-	•	analyze requires scores for all requests (or explicit partial mode)
-	•	report requires bin_stats + plots (or degrade gracefully with warning)
-	•	Ensure report clearly labels “partial run” if not complete. (COMPLETE)
+	•	analyze requires scores for all requests (or explicit partial mode) (DONE)
+	•	report requires bin_stats + plots (or degrade gracefully with warning) 
+	•	Ensure report clearly labels “partial run” if not complete. (DONE)
 3.	Failure taxonomy expansion guard
 	•	Confirm taxonomy is stable and doesn’t over-classify.
 	•	Add a “UNKNOWN_FAILURE” bucket instead of guessing.

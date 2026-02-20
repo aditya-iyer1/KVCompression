@@ -20,6 +20,8 @@ def _ensure_scores_table(conn: sqlite3.Connection) -> bool:
     Uses IF NOT EXISTS to avoid errors if table already exists.
     This is safe and doesn't modify the schema.py file.
     
+    Adds 'acc' column for primary metric value (F1 for NarrativeQA, EM otherwise).
+    
     Args:
         conn: SQLite connection.
     
@@ -32,11 +34,19 @@ def _ensure_scores_table(conn: sqlite3.Connection) -> bool:
                 request_id TEXT PRIMARY KEY,
                 em REAL NOT NULL,
                 f1 REAL NOT NULL,
+                acc REAL,
                 pred_norm TEXT,
                 gold_norm TEXT,
                 FOREIGN KEY (request_id) REFERENCES requests(request_id)
             )
         """)
+        # Add 'acc' column if it doesn't exist (for backwards compatibility)
+        try:
+            conn.execute("ALTER TABLE scores ADD COLUMN acc REAL")
+            conn.commit()
+        except sqlite3.OperationalError:
+            # Column already exists, ignore
+            pass
         conn.commit()
         return True
     except Exception:
@@ -56,6 +66,50 @@ def _get_run_exp_group_id(conn: sqlite3.Connection, run_id: str) -> Optional[str
     cursor = conn.execute("SELECT exp_group_id FROM runs WHERE run_id = ?", (run_id,))
     row = cursor.fetchone()
     return row["exp_group_id"] if row else None
+
+
+def _get_task_name(conn: sqlite3.Connection, run_id: str) -> Optional[str]:
+    """Get task name for a run from the dataset.
+    
+    Args:
+        conn: SQLite connection.
+        run_id: Run identifier.
+    
+    Returns:
+        Task name (e.g., "narrativeqa") or None if not found.
+    """
+    try:
+        cursor = conn.execute("""
+            SELECT d.task
+            FROM runs r
+            JOIN requests req ON r.run_id = req.run_id
+            JOIN datasets d ON req.dataset_id = d.dataset_id
+            WHERE r.run_id = ?
+            LIMIT 1
+        """, (run_id,))
+        row = cursor.fetchone()
+        return row["task"] if row else None
+    except Exception:
+        return None
+
+
+def _get_primary_metric_value(em: float, f1: float, task: Optional[str] = None) -> float:
+    """Get primary metric value based on task.
+    
+    For NarrativeQA, uses F1 as primary metric (more lenient for partial matches).
+    For other tasks, defaults to EM (exact match).
+    
+    Args:
+        em: Exact match score.
+        f1: F1 score.
+        task: Task name (e.g., "narrativeqa").
+    
+    Returns:
+        Primary metric value (F1 for narrativeqa, EM otherwise).
+    """
+    if task and task.lower() == "narrativeqa":
+        return f1
+    return em
 
 
 def _write_scores_csv(exp_group_id: str, scores_data: list) -> Path:
@@ -105,6 +159,9 @@ def score_run(conn: sqlite3.Connection, run_id: str) -> None:
         raise ValueError(f"Run {run_id} not found")
     
     exp_group_id = run_row["exp_group_id"]
+    
+    # Get task name to determine primary metric
+    task_name = _get_task_name(conn, run_id)
     
     # Query all requests with their responses and failure info
     cursor = conn.execute("""
@@ -169,6 +226,9 @@ def score_run(conn: sqlite3.Connection, run_id: str) -> None:
         em = best_exact_match(pred_text_for_scoring, gold_answers)
         f1 = best_f1(pred_text_for_scoring, gold_answers)
         
+        # Determine primary metric value (F1 for NarrativeQA, EM otherwise)
+        primary_metric_value = _get_primary_metric_value(em, f1, task_name)
+        
         # Normalize texts
         pred_norm = normalize_text(pred_text_for_scoring)
         # Use first gold answer for gold_norm (consistent approach)
@@ -199,10 +259,14 @@ def score_run(conn: sqlite3.Connection, run_id: str) -> None:
                     """, (request_id, failure_label, error_message or ""))
         
         # Prepare score data
+        # Note: For NarrativeQA, primary metric is F1; for other tasks, it's EM.
+        # Both EM and F1 are stored in DB for backwards compatibility.
+        # Downstream code should use F1 for NarrativeQA, EM for others.
         score_data = {
             "request_id": request_id,
             "em": em,
             "f1": f1,
+            "acc": primary_metric_value,  # Primary metric value (F1 for NarrativeQA, EM otherwise)
             "pred_norm": pred_norm,
             "gold_norm": gold_norm
         }
@@ -215,16 +279,18 @@ def score_run(conn: sqlite3.Connection, run_id: str) -> None:
             for score_data in scores_to_insert:
                 conn.execute("""
                     INSERT OR REPLACE INTO scores
-                    (request_id, em, f1, pred_norm, gold_norm)
-                    VALUES (?, ?, ?, ?, ?)
+                    (request_id, em, f1, acc, pred_norm, gold_norm)
+                    VALUES (?, ?, ?, ?, ?, ?)
                 """, (
                     score_data["request_id"],
                     score_data["em"],
                     score_data["f1"],
+                    score_data["acc"],
                     score_data["pred_norm"],
                     score_data["gold_norm"]
                 ))
-        print(f"  Scored {len(scores_to_insert)} requests, wrote to scores table")
+        primary_metric = "F1" if task_name and task_name.lower() == "narrativeqa" else "EM"
+        print(f"  Scored {len(scores_to_insert)} requests, wrote to scores table (primary metric: {primary_metric})")
     else:
         # Fallback: write to CSV
         csv_path = _write_scores_csv(exp_group_id, csv_fallback_data)
