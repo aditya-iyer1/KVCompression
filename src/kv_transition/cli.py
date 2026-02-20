@@ -842,6 +842,30 @@ def cmd_report(config_path: Path, allow_partial: bool = False, overrides: Option
         return 2
 
 
+def _get_row_value(row, key: str, default=None):
+    """Safely get value from Row object or dict.
+    
+    Works with both sqlite3.Row (which doesn't have .get()) and dict-like objects.
+    
+    Args:
+        row: sqlite3.Row or dict-like object.
+        key: Key to access.
+        default: Default value if key is missing.
+    
+    Returns:
+        Value from row[key] if key exists, else default.
+    """
+    try:
+        if hasattr(row, 'keys') and key in row.keys():
+            return row[key]
+        elif isinstance(row, dict):
+            return row.get(key, default)
+        else:
+            return default
+    except (KeyError, TypeError, AttributeError):
+        return default
+
+
 def _truncate_text(text: Optional[str], max_len: int = 500) -> str:
     """Truncate text to max length with ellipsis."""
     if text is None:
@@ -949,13 +973,6 @@ def cmd_sample(
         
         # Print samples
         import json
-        
-        def _get_row_value(row, key, default=None):
-            """Safely get value from Row object."""
-            try:
-                return row[key] if key in row.keys() else default
-            except (KeyError, TypeError, AttributeError):
-                return default
         
         for i, row in enumerate(sampled_rows, 1):
             request_id = _get_row_value(row, "request_id", "N/A")
@@ -1145,7 +1162,7 @@ def cmd_all(config_path: Path, run_id: Optional[str] = None, allow_partial: bool
                 print(f"Warning: Run {rid} metadata not found, skipping", file=sys.stderr)
                 continue
             
-            kv_budget = run_meta["kv_budget"]
+            kv_budget = _get_row_value(run_meta, "kv_budget")
             
             # Get dataset_id from first request
             cursor = conn.execute("SELECT dataset_id FROM requests WHERE run_id = ? LIMIT 1", (rid,))
@@ -1170,7 +1187,7 @@ def cmd_all(config_path: Path, run_id: Optional[str] = None, allow_partial: bool
             
             # Get bin structure for token_min/token_max
             bin_structure = queries.get_bin_structure(conn, dataset_id)
-            bin_edges = {row["bin_idx"]: (row["token_min"], row["token_max"]) for row in bin_structure}
+            bin_edges = {_get_row_value(row, "bin_idx"): (_get_row_value(row, "token_min"), _get_row_value(row, "token_max")) for row in bin_structure}
             
             # Add token_min/token_max to bin_stats
             for stat in bin_stats:
@@ -1187,7 +1204,7 @@ def cmd_all(config_path: Path, run_id: Optional[str] = None, allow_partial: bool
             runs_data.append({
                 "run_id": rid,
                 "kv_budget": kv_budget,
-                "kv_policy": run_meta.get("kv_policy", ""),
+                "kv_policy": _get_row_value(run_meta, "kv_policy", ""),
                 "bins": bin_stats
             })
         
@@ -1203,7 +1220,7 @@ def cmd_all(config_path: Path, run_id: Optional[str] = None, allow_partial: bool
         kv_policy = runs_data[0].get("kv_policy", "")
         if not kv_policy:
             first_run_meta = queries.get_run_metadata(conn, runs_data[0]["run_id"])
-            kv_policy = first_run_meta.get("kv_policy", "") if first_run_meta else ""
+            kv_policy = _get_row_value(first_run_meta, "kv_policy", "") if first_run_meta else ""
         
         # Persist transition summary
         summary = {
