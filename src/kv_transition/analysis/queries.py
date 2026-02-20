@@ -47,11 +47,31 @@ def get_bin_structure(conn: sqlite3.Connection, dataset_id: str) -> List[sqlite3
     return cursor.fetchall()
 
 
+def _has_acc_column(conn: sqlite3.Connection) -> bool:
+    """Check if scores table has 'acc' column.
+    
+    Args:
+        conn: SQLite connection.
+    
+    Returns:
+        True if 'acc' column exists, False otherwise.
+    """
+    try:
+        cursor = conn.execute("PRAGMA table_info(scores)")
+        columns = cursor.fetchall()
+        return any(col[1] == 'acc' for col in columns)
+    except Exception:
+        return False
+
+
 def get_bin_level_rows(conn: sqlite3.Connection, run_id: str) -> List[sqlite3.Row]:
     """Get bin-level data for all requests in a run.
     
     Joins requests, scores, telemetry, manifest_entries, and failures
     to provide per-request data with bin assignments.
+    
+    Uses scores.acc as primary accuracy metric when available (F1 for NarrativeQA,
+    EM for other tasks), falling back to scores.em for older databases.
     
     Args:
         conn: SQLite connection.
@@ -60,8 +80,9 @@ def get_bin_level_rows(conn: sqlite3.Connection, run_id: str) -> List[sqlite3.Ro
     Returns:
         List of rows with:
         - bin_idx
-        - em (from scores)
-        - f1 (from scores)
+        - em (from scores, for backwards compatibility)
+        - f1 (from scores, for backwards compatibility)
+        - acc (primary accuracy metric: scores.acc if available, else scores.em)
         - latency_s (from telemetry)
         - prompt_tokens (from telemetry)
         - completion_tokens (from telemetry)
@@ -69,24 +90,52 @@ def get_bin_level_rows(conn: sqlite3.Connection, run_id: str) -> List[sqlite3.Ro
         - failure (0 or 1, indicating if failure exists)
         Ordered by bin_idx.
     """
-    cursor = conn.execute("""
-        SELECT 
-            me.bin_idx,
-            s.em,
-            s.f1,
-            t.latency_s,
-            t.prompt_tokens,
-            t.completion_tokens,
-            t.total_tokens,
-            CASE WHEN f.request_id IS NOT NULL THEN 1 ELSE 0 END AS failure
-        FROM requests r
-        LEFT JOIN scores s ON r.request_id = s.request_id
-        LEFT JOIN telemetry t ON r.request_id = t.request_id
-        LEFT JOIN manifest_entries me ON r.dataset_id = me.dataset_id 
-            AND r.entry_idx = me.entry_idx
-        LEFT JOIN failures f ON r.request_id = f.request_id
-        WHERE r.run_id = ?
-        ORDER BY me.bin_idx, r.request_id
-    """, (run_id,))
+    # Check if acc column exists
+    has_acc = _has_acc_column(conn)
+    
+    if has_acc:
+        # Use acc column when available (F1 for NarrativeQA, EM for others)
+        cursor = conn.execute("""
+            SELECT 
+                me.bin_idx,
+                s.em,
+                s.f1,
+                COALESCE(s.acc, s.em) AS acc,
+                t.latency_s,
+                t.prompt_tokens,
+                t.completion_tokens,
+                t.total_tokens,
+                CASE WHEN f.request_id IS NOT NULL THEN 1 ELSE 0 END AS failure
+            FROM requests r
+            LEFT JOIN scores s ON r.request_id = s.request_id
+            LEFT JOIN telemetry t ON r.request_id = t.request_id
+            LEFT JOIN manifest_entries me ON r.dataset_id = me.dataset_id 
+                AND r.entry_idx = me.entry_idx
+            LEFT JOIN failures f ON r.request_id = f.request_id
+            WHERE r.run_id = ?
+            ORDER BY me.bin_idx, r.request_id
+        """, (run_id,))
+    else:
+        # Fallback for older DBs: use em as acc (maintains prior behavior)
+        cursor = conn.execute("""
+            SELECT 
+                me.bin_idx,
+                s.em,
+                s.f1,
+                s.em AS acc,
+                t.latency_s,
+                t.prompt_tokens,
+                t.completion_tokens,
+                t.total_tokens,
+                CASE WHEN f.request_id IS NOT NULL THEN 1 ELSE 0 END AS failure
+            FROM requests r
+            LEFT JOIN scores s ON r.request_id = s.request_id
+            LEFT JOIN telemetry t ON r.request_id = t.request_id
+            LEFT JOIN manifest_entries me ON r.dataset_id = me.dataset_id 
+                AND r.entry_idx = me.entry_idx
+            LEFT JOIN failures f ON r.request_id = f.request_id
+            WHERE r.run_id = ?
+            ORDER BY me.bin_idx, r.request_id
+        """, (run_id,))
     
     return cursor.fetchall()
