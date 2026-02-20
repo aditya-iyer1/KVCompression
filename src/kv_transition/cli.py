@@ -11,7 +11,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import paths
 from .settings import load_settings
@@ -665,7 +665,78 @@ def cmd_analyze(config_path: Path, run_id: Optional[str] = None, overrides: Opti
         return 2
 
 
-def cmd_report(config_path: Path, overrides: Optional[Dict[str, Any]] = None) -> int:
+def _validate_report_prerequisites(
+    exp_group_id: str,
+    db_path: Path,
+    run_dir: Path,
+    allow_partial: bool = False
+) -> Tuple[bool, List[str]]:
+    """Validate prerequisites for report generation.
+    
+    Args:
+        exp_group_id: Experiment group ID.
+        db_path: Path to database file.
+        run_dir: Path to run directory.
+        allow_partial: If True, return warnings instead of errors.
+    
+    Returns:
+        Tuple of (is_valid, list_of_missing_items).
+        If allow_partial is False and prerequisites are missing, is_valid is False.
+        If allow_partial is True, is_valid is always True but missing_items contains warnings.
+    """
+    missing = []
+    
+    # Check database file exists
+    if not db_path.exists():
+        missing.append(f"Database file missing: {db_path}")
+    else:
+        # Check database contains bin_stats table (lightweight check)
+        try:
+            from .db import connect, schema
+            conn = connect.connect(db_path)
+            schema.init_schema(conn)
+            
+            cursor = conn.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='bin_stats'
+            """)
+            if cursor.fetchone() is None:
+                missing.append(f"Database table 'bin_stats' missing (run 'analyze' command first)")
+            
+            # Check if bin_stats has any data for this exp_group_id
+            cursor = conn.execute("""
+                SELECT COUNT(*) FROM bin_stats bs
+                JOIN runs r ON bs.run_id = r.run_id
+                WHERE r.exp_group_id = ?
+            """, (exp_group_id,))
+            row = cursor.fetchone()
+            count = row[0] if row else 0
+            if count == 0:
+                missing.append(f"No bin_stats data found for exp_group_id '{exp_group_id}' (run 'analyze' command first)")
+            
+            conn.close()
+        except Exception as e:
+            missing.append(f"Error checking database: {e}")
+    
+    # Check plots directory exists
+    plots_dir = run_dir / "plots"
+    if not plots_dir.exists():
+        missing.append(f"Plots directory missing: {plots_dir}")
+    else:
+        # Check expected plot files
+        expected_plots = ["acc_by_bin.png", "fail_by_bin.png", "latency_p50_by_bin.png"]
+        for plot_file in expected_plots:
+            plot_path = plots_dir / plot_file
+            if not plot_path.exists():
+                missing.append(f"Plot file missing: {plot_path}")
+    
+    if not allow_partial and missing:
+        return (False, missing)
+    
+    return (True, missing)
+
+
+def cmd_report(config_path: Path, allow_partial: bool = False, overrides: Optional[Dict[str, Any]] = None) -> int:
     """Generate markdown report from persisted DB outputs (Phase F).
     
     Reads experiment metadata, runs, transition summary, bin stats, and plot files,
@@ -673,6 +744,7 @@ def cmd_report(config_path: Path, overrides: Optional[Dict[str, Any]] = None) ->
     
     Args:
         config_path: Path to YAML config file.
+        allow_partial: If True, allow report generation even if prerequisites are missing.
         overrides: Optional config overrides.
     
     Returns:
@@ -687,6 +759,30 @@ def cmd_report(config_path: Path, overrides: Optional[Dict[str, Any]] = None) ->
     exp_group_id = config["output"]["exp_group_id"]
     db_path_cfg = config.get("db", {}).get("path")
     db_p = paths.db_path(exp_group_id, db_path_cfg)
+    run_d = paths.run_dir(exp_group_id)
+    
+    # Validate prerequisites
+    is_valid, missing = _validate_report_prerequisites(exp_group_id, db_p, run_d, allow_partial=allow_partial)
+    
+    if not is_valid:
+        print("Error: Missing required prerequisites for report generation:", file=sys.stderr)
+        for item in missing:
+            print(f"  - {item}", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("To fix:", file=sys.stderr)
+        if any("bin_stats" in item or "analyze" in item.lower() for item in missing):
+            print("  Run: uv run python -m kv_transition analyze -c <config>", file=sys.stderr)
+        if any("plot" in item.lower() for item in missing):
+            print("  Run: uv run python -m kv_transition analyze -c <config> (generates plots)", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Or use --allow-partial to generate a partial report.", file=sys.stderr)
+        return 2
+    
+    if missing and allow_partial:
+        print("Warning: Generating partial report (--allow-partial enabled). Missing items:", file=sys.stderr)
+        for item in missing:
+            print(f"  - {item}", file=sys.stderr)
+        print("", file=sys.stderr)
     
     # Open DB and init schema
     try:
@@ -721,7 +817,7 @@ def cmd_report(config_path: Path, overrides: Optional[Dict[str, Any]] = None) ->
         return 2
 
 
-def cmd_all(config_path: Path, run_id: Optional[str] = None, overrides: Optional[Dict[str, Any]] = None) -> int:
+def cmd_all(config_path: Path, run_id: Optional[str] = None, allow_partial: bool = False, overrides: Optional[Dict[str, Any]] = None) -> int:
     """Run complete pipeline: score → analyze → report (Phase D→E→F).
     
     Executes scoring, analysis, and report generation in sequence without re-running inference.
@@ -882,12 +978,13 @@ def cmd_all(config_path: Path, run_id: Optional[str] = None, overrides: Optional
         
         # ===== Phase F: Report =====
         print("Phase F: Generating report...")
-        from .report.build import build_report
-        
-        report_path = build_report(conn, config)
-        print(f"  Report generated: {report_path}")
-        
         conn.close()
+        
+        # Call cmd_report with allow_partial flag (it will handle validation and generation)
+        report_exit_code = cmd_report(config_path, allow_partial=allow_partial, overrides=overrides)
+        if report_exit_code != 0:
+            return report_exit_code
+        
         return 0
         
     except ValueError as e:
@@ -1055,6 +1152,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         parents=[common_parser],
         help="Generate markdown report from persisted DB outputs (Phase F)"
     )
+    report_parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="Allow report generation even if some prerequisites are missing (prints warnings)"
+    )
     
     # all command
     all_parser = subparsers.add_parser(
@@ -1066,6 +1168,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--run-id",
         type=str,
         help="Specific run_id to score/analyze (default: all runs for exp_group_id). Report is always group-level."
+    )
+    all_parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="Allow report generation even if some prerequisites are missing (prints warnings)"
     )
     
     # Parse arguments
@@ -1100,9 +1207,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     elif args.command == "analyze":
         return cmd_analyze(args.config, run_id=getattr(args, 'run_id', None), overrides=overrides)
     elif args.command == "report":
-        return cmd_report(args.config, overrides=overrides)
+        return cmd_report(args.config, allow_partial=getattr(args, 'allow_partial', False), overrides=overrides)
     elif args.command == "all":
-        return cmd_all(args.config, run_id=getattr(args, 'run_id', None), overrides=overrides)
+        return cmd_all(args.config, run_id=getattr(args, 'run_id', None), allow_partial=getattr(args, 'allow_partial', False), overrides=overrides)
     else:
         parser.print_help()
         return 2
