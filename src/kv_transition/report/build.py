@@ -23,6 +23,210 @@ def _get_value(row, key):
         return None
 
 
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    """Check if a table exists in the database."""
+    cursor = conn.execute("""
+        SELECT name FROM sqlite_master 
+        WHERE type='table' AND name=?
+    """, (table_name,))
+    return cursor.fetchone() is not None
+
+
+def _compute_integrity_summary(conn: sqlite3.Connection, exp_group_id: str) -> str:
+    """Compute integrity summary metrics and return as markdown section.
+    
+    Computes failure/quality counters from SQLite DB:
+    - % empty outputs (response text missing/empty)
+    - % refusals (from failures table if present)
+    - % engine errors/timeouts (from failures table if present)
+    - % format errors (from failures table if present)
+    - % missing telemetry (if telemetry table exists)
+    
+    Args:
+        conn: SQLite connection.
+        exp_group_id: Experiment group ID.
+    
+    Returns:
+        Markdown string for Integrity Summary section.
+    """
+    # Get all request_ids for this exp_group_id
+    try:
+        cursor = conn.execute("""
+            SELECT r.request_id
+            FROM requests r
+            JOIN runs ru ON r.run_id = ru.run_id
+            WHERE ru.exp_group_id = ?
+        """, (exp_group_id,))
+        all_requests = cursor.fetchall()
+        total_requests = len(all_requests)
+    except sqlite3.OperationalError:
+        # requests table might not exist
+        return "## Integrity Summary\n\n**Status:** Requests table not available → N/A\n"
+    
+    if total_requests == 0:
+        return "## Integrity Summary\n\n**Status:** No requests found for this experiment.\n"
+    
+    # Initialize counters
+    empty_outputs = 0
+    refusals = 0
+    engine_errors = 0
+    timeouts = 0
+    format_errors = 0
+    truncated = 0
+    missing_telemetry = 0
+    failures_available = False
+    telemetry_available = False
+    
+    # Check if failures table exists
+    if _table_exists(conn, "failures"):
+        failures_available = True
+        try:
+            cursor = conn.execute("""
+                SELECT f.error_type, COUNT(*) as count
+                FROM failures f
+                JOIN requests r ON f.request_id = r.request_id
+                JOIN runs ru ON r.run_id = ru.run_id
+                WHERE ru.exp_group_id = ?
+                GROUP BY f.error_type
+            """, (exp_group_id,))
+            failure_rows = cursor.fetchall()
+            
+            for row in failure_rows:
+                try:
+                    error_type = row["error_type"]
+                    count = row["count"]
+                except (KeyError, TypeError):
+                    # Fallback for tuple-style rows
+                    error_type = row[0] if len(row) > 0 else None
+                    count = row[1] if len(row) > 1 else 0
+                
+                if error_type:
+                    error_type_upper = error_type.upper()
+                    if "REFUSAL" in error_type_upper:
+                        refusals += count
+                    elif "TIMEOUT" in error_type_upper:
+                        timeouts += count
+                    elif "ENGINE_ERROR" in error_type_upper or "ENGINE" in error_type_upper:
+                        engine_errors += count
+                    elif "FORMAT_ERROR" in error_type_upper or "FORMAT" in error_type_upper:
+                        format_errors += count
+                    elif "TRUNCATED" in error_type_upper:
+                        truncated += count
+                    elif "EMPTY_OUTPUT" in error_type_upper:
+                        empty_outputs += count
+        except sqlite3.OperationalError:
+            failures_available = False
+    
+    # Count empty outputs from responses table
+    if _table_exists(conn, "responses"):
+        try:
+            cursor = conn.execute("""
+                SELECT COUNT(*) as count
+                FROM responses res
+                JOIN requests r ON res.request_id = r.request_id
+                JOIN runs ru ON r.run_id = ru.run_id
+                WHERE ru.exp_group_id = ?
+                AND (res.text IS NULL OR res.text = '' OR TRIM(res.text) = '')
+            """, (exp_group_id,))
+            row = cursor.fetchone()
+            if row:
+                try:
+                    empty_from_responses = row["count"]
+                except (KeyError, TypeError):
+                    empty_from_responses = row[0] if len(row) > 0 else 0
+                # Use max of failures table count or responses table count
+                empty_outputs = max(empty_outputs, empty_from_responses)
+        except sqlite3.OperationalError:
+            pass
+    
+    # Count missing telemetry
+    if _table_exists(conn, "telemetry"):
+        telemetry_available = True
+        try:
+            cursor = conn.execute("""
+                SELECT COUNT(*) as count
+                FROM requests r
+                JOIN runs ru ON r.run_id = ru.run_id
+                LEFT JOIN telemetry t ON r.request_id = t.request_id
+                WHERE ru.exp_group_id = ?
+                AND t.request_id IS NULL
+            """, (exp_group_id,))
+            row = cursor.fetchone()
+            if row:
+                try:
+                    missing_telemetry = row["count"]
+                except (KeyError, TypeError):
+                    missing_telemetry = row[0] if len(row) > 0 else 0
+        except sqlite3.OperationalError:
+            telemetry_available = False
+    
+    # Compute percentages
+    def pct(count, total):
+        if total == 0:
+            return 0.0
+        return (count / total) * 100.0
+    
+    # Build markdown section
+    lines = ["## Integrity Summary", ""]
+    
+    # Table header
+    lines.append("| Metric | Count | Percentage |")
+    lines.append("|--------|-------|------------|")
+    
+    # Empty outputs
+    lines.append(f"| Empty outputs | {empty_outputs} | {pct(empty_outputs, total_requests):.1f}% |")
+    
+    # Failures (if available)
+    if failures_available:
+        if refusals > 0:
+            lines.append(f"| Refusals | {refusals} | {pct(refusals, total_requests):.1f}% |")
+        if timeouts > 0:
+            lines.append(f"| Timeouts | {timeouts} | {pct(timeouts, total_requests):.1f}% |")
+        if engine_errors > 0:
+            lines.append(f"| Engine errors | {engine_errors} | {pct(engine_errors, total_requests):.1f}% |")
+        if format_errors > 0:
+            lines.append(f"| Format errors | {format_errors} | {pct(format_errors, total_requests):.1f}% |")
+        if truncated > 0:
+            lines.append(f"| Truncated | {truncated} | {pct(truncated, total_requests):.1f}% |")
+    else:
+        lines.append("| Failures (by type) | N/A | N/A | *Failures table missing* |")
+    
+    # Missing telemetry
+    if telemetry_available:
+        lines.append(f"| Missing telemetry | {missing_telemetry} | {pct(missing_telemetry, total_requests):.1f}% |")
+    else:
+        lines.append("| Missing telemetry | N/A | N/A | *Telemetry table missing* |")
+    
+    lines.append("")
+    lines.append("**Total requests:** " + str(total_requests))
+    lines.append("")
+    
+    # Interpretation notes
+    lines.append("### Interpretation")
+    lines.append("")
+    
+    total_failures = empty_outputs + refusals + timeouts + engine_errors + format_errors + truncated
+    failure_rate = pct(total_failures, total_requests)
+    
+    if failure_rate > 10.0:
+        lines.append("- **High failure rate detected** (" + f"{failure_rate:.1f}%): Failure rate may be driving accuracy collapse rather than quality degradation.")
+    elif failure_rate > 5.0:
+        lines.append("- **Moderate failure rate** (" + f"{failure_rate:.1f}%): Monitor failure patterns across bins to distinguish system failures from quality issues.")
+    else:
+        lines.append("- **Low failure rate** (" + f"{failure_rate:.1f}%): Failures are unlikely to be the primary driver of accuracy changes.")
+    
+    if empty_outputs > 0:
+        empty_pct = pct(empty_outputs, total_requests)
+        lines.append(f"- **Empty outputs** ({empty_pct:.1f}%): May indicate KV compression truncation or model refusal; check correlation with failure rate spikes.")
+    
+    if refusals > 0 or timeouts > 0 or engine_errors > 0:
+        lines.append("- **Infrastructure failures** (refusals/timeouts/engine errors): Distinguish from compression-induced failures; these should be retried or excluded from analysis.")
+    
+    lines.append("")
+    
+    return "\n".join(lines)
+
+
 def build_report(conn: sqlite3.Connection, settings: Dict) -> Path:
     """Generate markdown report from persisted DB outputs and plot files.
     
@@ -186,8 +390,12 @@ def build_report(conn: sqlite3.Connection, settings: Dict) -> Path:
     template = env.get_template(template_path.name)
     rendered = template.render(**context)
     
+    # Compute and append Integrity Summary
+    integrity_section = _compute_integrity_summary(conn, exp_group_id)
+    rendered_with_integrity = rendered + "\n\n" + integrity_section
+    
     # Write report
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(rendered, encoding="utf-8")
+    report_path.write_text(rendered_with_integrity, encoding="utf-8")
     
     return report_path
