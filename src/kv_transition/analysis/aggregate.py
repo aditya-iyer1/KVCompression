@@ -86,8 +86,8 @@ def aggregate_run_bins(conn: sqlite3.Connection, run_id: str) -> List[Dict]:
         List of dicts, one per bin, with keys:
         - bin_idx
         - n (count of requests)
-        - acc_mean (mean F1 score)
-        - acc_std (std of F1 scores)
+        - acc_mean (mean primary accuracy: scores.acc if available, else f1)
+        - acc_std (std of primary accuracy scores)
         - em_mean (mean EM score, optional)
         - fail_rate (proportion of failures)
         - lat_p50 (50th percentile latency)
@@ -106,8 +106,9 @@ def aggregate_run_bins(conn: sqlite3.Connection, run_id: str) -> List[Dict]:
     
     # Group by bin_idx
     bins_data: Dict[int, Dict[str, List[float]]] = defaultdict(lambda: {
-        'f1': [],
-        'em': [],
+        'acc': [],  # Primary accuracy metric (F1 for NarrativeQA, EM for others)
+        'f1': [],   # F1 scores (for backwards compatibility)
+        'em': [],   # EM scores (for backwards compatibility)
         'failure': [],
         'latency_s': [],
         'total_tokens': []
@@ -118,11 +119,25 @@ def aggregate_run_bins(conn: sqlite3.Connection, run_id: str) -> List[Dict]:
         if bin_idx is None:
             continue
         
-        # Collect F1 scores
+        # Collect primary accuracy metric (acc column from query)
+        # Query always returns 'acc' (either from scores.acc or s.em AS acc for older DBs)
+        # Falls back to f1 if acc is None (shouldn't happen, but safe fallback)
+        try:
+            if 'acc' in row.keys() and row['acc'] is not None:
+                bins_data[bin_idx]['acc'].append(row['acc'])
+            elif row['f1'] is not None:
+                # Fallback to f1 if acc is None (shouldn't happen with current query)
+                bins_data[bin_idx]['acc'].append(row['f1'])
+        except (KeyError, TypeError):
+            # Fallback to f1 if acc column doesn't exist (shouldn't happen)
+            if row['f1'] is not None:
+                bins_data[bin_idx]['acc'].append(row['f1'])
+        
+        # Collect F1 scores (for backwards compatibility)
         if row['f1'] is not None:
             bins_data[bin_idx]['f1'].append(row['f1'])
         
-        # Collect EM scores
+        # Collect EM scores (for backwards compatibility)
         if row['em'] is not None:
             bins_data[bin_idx]['em'].append(row['em'])
         
@@ -143,11 +158,12 @@ def aggregate_run_bins(conn: sqlite3.Connection, run_id: str) -> List[Dict]:
     for bin_idx in sorted(bins_data.keys()):
         data = bins_data[bin_idx]
         
-        n = len(data['f1']) if data['f1'] else 0
+        # Use acc for count (primary accuracy metric)
+        n = len(data['acc']) if data['acc'] else 0
         
-        # Accuracy metrics (F1 as primary)
-        acc_mean = _mean(data['f1']) if data['f1'] else None
-        acc_std = _std(data['f1']) if data['f1'] else None
+        # Accuracy metrics (use primary acc metric: F1 for NarrativeQA, EM for others)
+        acc_mean = _mean(data['acc']) if data['acc'] else None
+        acc_std = _std(data['acc']) if data['acc'] else None
         em_mean = _mean(data['em']) if data['em'] else None
         
         # Failure rate
