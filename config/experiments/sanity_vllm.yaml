@@ -1,0 +1,43 @@
+# Golden sanity run (Pass 3 / Truthfulness & Utility Validation)
+# Goal: tiny deterministic set to sanity-check degradation vs KV budget.
+#
+# Usage (uv):
+#   uv run python -m kv_transition all -c config/experiments/sanity.yaml
+#
+# Expected: budgets=[1.0, 0.2], n_bins=1 (single bin), low n_per_bin.
+# Inspect report + a handful of rows manually for directional sanity.
+
+dataset:
+  name: longbench
+  task: narrativeqa
+  n_per_bin: 10
+
+binning:
+  n_bins: 1
+
+model:
+  name: ${MODEL_NAME}
+
+engine:
+  name: openai_compat
+  base_url: ${BASE_URL}
+  api_key_env: OPENAI_API_KEY
+  request:
+    timeout_s: 120
+
+kv:
+  policy: snapkv
+  budgets: [1.0, 0.2]
+
+decoding:
+  temperature: 0
+  max_tokens: 256
+
+analysis:
+  seed: 1337
+
+output:
+  exp_group_id: sanity_longbench_narrativeqa_vllm_v1
+
+db:
+  path: auto
