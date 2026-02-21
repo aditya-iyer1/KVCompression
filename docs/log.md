@@ -1419,12 +1419,12 @@ Goal
 The harness should work beyond the single “submission_longbench_narrativeqa_v1” scenario.
 
 Steps
-1.	Dataset variability tests
+1.	Dataset variability tests (COMPLETE)
 	•	Run at least 2 additional LongBench tasks with the same profile:
 	•	one “structured/short answer” style
 	•	one “long narrative” style
 	•	Confirm pipeline works without prompt tuning.
-2.	Engine variability tests
+2.	Engine variability tests 
 	•	Validate on:
 	•	OpenAI API base_url
 	•	at least one OpenAI-compatible local server base_url (even if small model)

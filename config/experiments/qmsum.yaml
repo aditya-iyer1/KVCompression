@@ -1,0 +1,43 @@
+# Experiment config: SnapKV on LongBench QMSum task, KV budgets validation.
+# Small/cheap validation run to test pipeline on long-form summarization task.
+#
+# Usage (uv):
+#   uv run python -m kv_transition all -c config/experiments/qmsum.yaml
+#
+# Expected: budgets=[1.0, 0.2], n_bins=1 (single bin), n_per_bin=10.
+# Conservative settings for quick validation.
+
+dataset:
+  name: longbench
+  task: qmsum
+  n_per_bin: 10
+
+binning:
+  n_bins: 1
+
+model:
+  name: ${MODEL_NAME}
+
+engine:
+  name: openai_compat
+  base_url: ${BASE_URL}
+  api_key_env: OPENAI_API_KEY
+  request:
+    timeout_s: 120
+
+kv:
+  policy: snapkv
+  budgets: [1.0, 0.2]
+
+decoding:
+  temperature: 0
+  max_tokens: 256
+
+analysis:
+  seed: 1337
+
+output:
+  exp_group_id: qmsum_longbench_v1
+
+db:
+  path: auto
