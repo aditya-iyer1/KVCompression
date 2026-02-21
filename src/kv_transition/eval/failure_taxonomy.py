@@ -12,6 +12,7 @@ TRUNCATED = "TRUNCATED"
 FORMAT_ERROR = "FORMAT_ERROR"
 REFUSAL = "REFUSAL"
 TIMEOUT = "TIMEOUT"
+CONTEXT_LENGTH_EXCEEDED = "CONTEXT_LENGTH_EXCEEDED"
 ENGINE_ERROR = "ENGINE_ERROR"
 
 
@@ -46,6 +47,22 @@ def classify_failure(
         error_lower = error_message.lower()
         if "timeout" in error_lower or "timed out" in error_lower:
             return TIMEOUT
+    
+    # Check for context length exceeded (before generic truncation/engine errors)
+    if error_message:
+        error_lower = error_message.lower()
+        context_length_patterns = [
+            "maximum context length",
+            "context length is",
+            "context length exceeded",
+            "please reduce the length of the input messages",
+            "input messages are too long",
+            "(parameter=input_tokens",
+            "max context length",
+        ]
+        for pattern in context_length_patterns:
+            if pattern in error_lower:
+                return CONTEXT_LENGTH_EXCEEDED
     
     # Check error message for truncation indicators
     if error_message:
