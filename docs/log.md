@@ -1429,13 +1429,13 @@ Steps
 	•	OpenAI API base_url
 	•	at least one OpenAI-compatible local server base_url (even if small model)
 	•	Confirm telemetry parsing + failure taxonomy still behave.
-3.	Config variability tests (DONE)
+3.	Config variability tests (COMPLETE)
 	•	Test with:
 	•	different n_bins
 	•	different n_per_bin
 	•	different max_tokens
 	•	Confirm no assumptions break (e.g., empty bins, too few examples).
-4.	Missing-data resilience
+4.	Missing-data resilience (COMPLETE
 	•	Ensure analyze/report still produce useful output when:
 	•	telemetry is partially missing
 	•	some requests failed
@@ -1452,7 +1452,7 @@ Goal
 Reduce wasted tokens and avoid slow runs without sacrificing measurement quality.
 
 Steps
-1.	Prompt slimming
+1.	Prompt slimming (COMPLETE)
 	•	Measure prompt token count distribution by bin.
 	•	Identify avoidable overhead (system prompt verbosity, duplicated instructions).
 	•	Lock a minimal system instruction.
