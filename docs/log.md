@@ -1429,7 +1429,7 @@ Steps
 	•	OpenAI API base_url
 	•	at least one OpenAI-compatible local server base_url (even if small model)
 	•	Confirm telemetry parsing + failure taxonomy still behave.
-3.	Config variability tests
+3.	Config variability tests (DONE)
 	•	Test with:
 	•	different n_bins
 	•	different n_per_bin
