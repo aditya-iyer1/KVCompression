@@ -1,6 +1,6 @@
 # vLLM-compatible sanity run (Qwen 1.5B target)
 # Goal: tiny deterministic set to sanity-check degradation vs KV budget,
-# while capping prompt length to avoid ~8k context overflow.
+# while capping prompt length to avoid context overflow for LongBench trec.
 #
 # Usage (uv):
 #   uv run python -m kv_transition prepare -c config/experiments/sanity_vllm_qwen1p5b.yaml
@@ -8,10 +8,10 @@
 
 dataset:
   name: longbench
-  task: narrativeqa
+  task: trec
   n_per_bin: 10
   seed: 1337
-  max_prompt_tokens: 7000
+  max_prompt_tokens: 7900
 
 binning:
   n_bins: 1
@@ -38,7 +38,7 @@ analysis:
   seed: 1337
 
 output:
-  exp_group_id: sanity_vllm_qwen1p5b_v1
+  exp_group_id: sanity_vllm_qwen1p5b_trec_v1
 
 db:
   path: auto
