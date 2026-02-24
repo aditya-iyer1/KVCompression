@@ -480,6 +480,65 @@ def _compute_analyze_inputs_hash(conn, exp_group_id: str, run_ids: List[str]) ->
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 
 
+def _compute_score_inputs_hash(conn, run_ids: List[str]) -> str:
+    """Compute deterministic hash of DB state that scoring depends on.
+
+    For the selected run_ids: counts of responses and failures (via requests),
+    and max(rowid) of responses/failures, so cache invalidates when inference
+    output changes. run_ids are included so different subsets don't collide.
+    """
+    if not run_ids:
+        payload = json.dumps({"run_ids": [], "n_responses": 0, "n_failures": 0, "max_responses_rowid": None, "max_failures_rowid": None}, sort_keys=True)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+    placeholders = ",".join("?" * len(run_ids))
+    params = tuple(run_ids)
+    n_responses = 0
+    n_failures = 0
+    max_responses_rowid = None
+    max_failures_rowid = None
+    if _table_exists(conn, "requests"):
+        if _table_exists(conn, "responses"):
+            cur = conn.execute(
+                f"""
+                SELECT COUNT(*), MAX(resp.rowid)
+                FROM responses resp
+                JOIN requests r ON r.request_id = resp.request_id
+                WHERE r.run_id IN ({placeholders})
+                """,
+                params,
+            )
+            row = cur.fetchone()
+            if row:
+                n_responses = row[0] or 0
+                max_responses_rowid = row[1]
+        if _table_exists(conn, "failures"):
+            cur = conn.execute(
+                f"""
+                SELECT COUNT(*), MAX(fail.rowid)
+                FROM failures fail
+                JOIN requests r ON r.request_id = fail.request_id
+                WHERE r.run_id IN ({placeholders})
+                """,
+                params,
+            )
+            row = cur.fetchone()
+            if row:
+                n_failures = row[0] or 0
+                max_failures_rowid = row[1]
+    payload = json.dumps(
+        {
+            "run_ids": sorted(run_ids),
+            "n_responses": n_responses,
+            "n_failures": n_failures,
+            "max_responses_rowid": max_responses_rowid,
+            "max_failures_rowid": max_failures_rowid,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
 def _compute_report_inputs_hash(conn, exp_group_id: str, allow_partial: bool) -> str:
     """Compute deterministic hash of DB state that report depends on.
 
@@ -609,7 +668,7 @@ def cmd_score(config_path: Path, run_id: Optional[str] = None, overrides: Option
     
     # Open DB and init schema
     try:
-        from .db import connect, schema
+        from .db import connect, schema, dao
         conn = connect.connect(db_p)
         schema.init_schema(conn)
     except Exception as e:
@@ -619,6 +678,28 @@ def cmd_score(config_path: Path, run_id: Optional[str] = None, overrides: Option
     try:
         # Get run_ids to score
         run_ids = _get_run_ids(conn, exp_group_id, run_id)
+        
+        # Cache check: skip if config+inputs match and scores exist for selected run_ids
+        config_hash = stable_config_hash(config)
+        inputs_hash = _compute_score_inputs_hash(conn, run_ids)
+        cached = dao.get_stage_cache(conn, exp_group_id, "score")
+        if cached and cached.get("config_hash") == config_hash and cached.get("inputs_hash") == inputs_hash:
+            if run_ids and _table_exists(conn, "scores"):
+                placeholders = ",".join("?" * len(run_ids))
+                cur = conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM scores s
+                    JOIN requests r ON r.request_id = s.request_id
+                    WHERE r.run_id IN ({placeholders})
+                    """,
+                    tuple(run_ids),
+                )
+                row = cur.fetchone()
+                score_count = row[0] if row else 0
+                if score_count > 0:
+                    print("Score cache hit (config and inputs unchanged), skipping.")
+                    conn.close()
+                    return 0
         
         # Score each run
         from .eval.score import score_run
@@ -630,6 +711,10 @@ def cmd_score(config_path: Path, run_id: Optional[str] = None, overrides: Option
             except Exception as e:
                 print(f"Error scoring run {rid}: {e}", file=sys.stderr)
                 return 2
+        
+        # Upsert stage_cache on success
+        updated_at = datetime.now(timezone.utc).isoformat()
+        dao.upsert_stage_cache(conn, exp_group_id, "score", config_hash, inputs_hash, updated_at)
         
         conn.close()
         return 0
