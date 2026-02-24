@@ -1507,10 +1507,10 @@ Goal
 Make the project easy to run, easy to understand, and easy to trust.
 
 Steps
-1.	README Quickstart
+1.	README Quickstart (COMPLETE)
 	•	5 commands max to reproduce submission report.
 	•	Include expected output tree.
-2.	Report narrative quality
+2.	Report narrative quality (COMPLETE)
 	•	Ensure report always answers:
 	•	What changed with KV budget?
 	•	Where is the transition zone?
