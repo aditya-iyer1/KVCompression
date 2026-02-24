@@ -42,3 +42,6 @@ output:
 
 db:
   path: auto
+
+rate_limit:
+  max_rpm: 30
