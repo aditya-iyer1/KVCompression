@@ -12,6 +12,15 @@
 **Experiment Metadata:** (not available)
 {% endif %}
 
+### How to interpret this report
+
+- **Accuracy** is reported as mean F1 (and EM where applicable) per context-length bin. Higher is better; a drop across bins as KV budget decreases can indicate compression-induced degradation.
+- **Failure rate** is the fraction of requests in a bin that did not yield a scorable response (e.g. timeouts, rate limits, empty or malformed output). High failure rate can masquerade as accuracy collapse if not separated.
+- **Latency p50** is the median request latency per bin in seconds. It is included for completeness; the main tradeoffs in this harness are accuracy and failure rate vs KV budget.
+- **Transition zone** in this harness is the context-length region where accuracy or stability drops as KV cache budget is reduced. It is detected when a sufficient accuracy drop occurs between a higher and a lower budget at a given bin; “no transition detected” means no such drop met the configured threshold.
+
+---
+
 {% if transition %}
 ## Transition Summary
 
@@ -29,6 +38,31 @@
 
 No transition detected.
 {% endif %}
+
+### Transition interpretation
+
+{% if transition and transition.transition_bin_idx is not none %}
+A transition was detected: the accuracy drop occurs at **bin index {{ transition.transition_bin_idx }}** when moving from budget **{{ transition.pre_budget or "N/A" }}** to **{{ transition.transition_budget or "N/A" }}**. This bin range is the transition zone for this experiment—context lengths in this bin show the onset of degradation under the lower KV budget. Inspect the accuracy and failure-rate plots for this bin to confirm.
+{% else %}
+**No transition detected** in this run. Common reasons:
+
+- **Flat accuracy:** Accuracy does not drop enough (or at all) as KV budget decreases; the configured drop threshold was not met.
+- **Insufficient bin resolution:** Bins may be too coarse to isolate the length where degradation starts; consider more bins or a different binning strategy.
+- **Too few examples:** Per-bin sample sizes may be too small for a stable drop to be detected; check the *N* column in Per-Run Bin Stats.
+- **Failures dominating:** High failure rate in some bins can obscure true accuracy; accuracy is computed over scorable responses only, but if most requests fail, the signal is weak.
+
+Use the **accuracy**, **failure rate**, and **latency** plots below to diagnose: look for a bin where accuracy falls and/or failure rate rises as budget decreases.
+{% endif %}
+
+---
+
+### Collapse vs degradation
+
+**Accuracy drop with low failures** (degradation): the model still produces answers, but quality drops (lower F1/EM). This is the typical “compression hurts quality” signal.
+
+**Failure-driven collapse**: failure rate is high and many requests do not yield a scorable response; the reported accuracy is over a shrinking subset. If failure rate spikes before or together with an accuracy drop, treat the result as system failure (e.g. timeouts, rate limits) rather than pure quality degradation. Check the failure-rate plot and the `failures` table in the DB to separate rate-limit or timeout artifacts from true model degradation.
+
+---
 
 {% if plots %}
 ## Plots
@@ -65,3 +99,12 @@ No bin stats available for this run.
 {% endif %}
 
 {% endfor %}
+
+---
+
+## Limitations
+
+- **Small sample caveats:** Per-bin and per-budget sample sizes may be small; confidence intervals and transition detection are subject to sampling noise. Interpret single-bin swings with caution.
+- **Dataset-specificity:** Results apply to the configured dataset and task (e.g. LongBench NarrativeQA). Generalization to other domains or lengths is not guaranteed.
+- **Rate-limit and infrastructure artifacts:** High `RATE_LIMITED` or timeout counts can distort failure rate and effective sample size. Rerun with adjusted pacing or exclude affected runs when interpreting.
+- **Prompt and engine snapshot:** Metrics depend on the exact prompt template, model, and engine config at run time. Changes to any of these make cross-run comparisons less direct.
