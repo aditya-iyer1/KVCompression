@@ -112,9 +112,14 @@ def run_one_setting(
     pacing_rpm: Optional[int] = None
     run_pacing = settings.get("run", {}).get("pacing", {})
     rpm_candidate = run_pacing.get("requests_per_minute")
-    if rpm_candidate is not None and isinstance(rpm_candidate, int) and rpm_candidate > 0:
-        pacing_rpm = rpm_candidate
-    else:
+    if rpm_candidate is not None:
+        try:
+            v = int(rpm_candidate)
+            if v > 0:
+                pacing_rpm = v
+        except (TypeError, ValueError):
+            pass
+    if pacing_rpm is None:
         max_rpm = settings.get("engine", {}).get("rate_limit", {}).get("max_rpm")
         if max_rpm is not None:
             try:
@@ -128,7 +133,6 @@ def run_one_setting(
         print(f"  Pacing enabled: {pacing_rpm} RPM ({pacing_interval:.2f}s interval)")
     else:
         pacing_interval = None
-    print(f"  DEBUG pacing_rpm={pacing_rpm} pacing_interval={pacing_interval}")
     
     # Compute prompt template version hash
     prompt_template_version = _compute_prompt_template_version()
