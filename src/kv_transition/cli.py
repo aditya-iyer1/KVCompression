@@ -1038,6 +1038,141 @@ def cmd_sample(
         return 2
 
 
+def cmd_clean(
+    config_path: Path,
+    yes: bool = False,
+    purge_dataset: bool = False,
+    overrides: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Safely delete run-group artifacts for exp_group_id (dry-run by default).
+    
+    With --yes, deletes rows in FK-safe order for the target exp_group_id only.
+    With --purge-dataset, also removes dataset cache rows if not referenced elsewhere.
+    """
+    try:
+        config = load_settings(config_path, overrides=overrides)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"Error loading config: {e}", file=sys.stderr)
+        return 2
+    
+    exp_group_id = config["output"]["exp_group_id"]
+    db_path_cfg = config.get("db", {}).get("path")
+    db_p = paths.db_path(exp_group_id, db_path_cfg)
+    
+    if not db_p.exists():
+        print(f"DB not found: {db_p} (nothing to clean)", file=sys.stderr)
+        return 0
+    
+    try:
+        from .db import connect, schema
+        conn = connect.connect(db_p)
+        schema.init_schema(conn)
+    except Exception as e:
+        print(f"Error opening database: {e}", file=sys.stderr)
+        return 2
+    
+    conn.row_factory = None
+    def scalar(q: str, *params) -> int:
+        cur = conn.execute(q, params)
+        row = cur.fetchone()
+        return row[0] if row else 0
+    
+    # Resolve run_ids for this exp_group_id
+    cur = conn.execute("SELECT run_id FROM runs WHERE exp_group_id = ?", (exp_group_id,))
+    run_ids = [row[0] for row in cur.fetchall()]
+    
+    if not run_ids:
+        print(f"No runs found for exp_group_id={exp_group_id}. Nothing to clean.")
+        conn.close()
+        return 0
+    
+    placeholders = ",".join("?" * len(run_ids))
+    # Request IDs for these runs (for child tables)
+    cur = conn.execute(f"SELECT request_id FROM requests WHERE run_id IN ({placeholders})", run_ids)
+    request_ids = [row[0] for row in cur.fetchall()]
+    request_placeholders = ",".join("?" * len(request_ids)) if request_ids else ""
+    
+    # Dataset IDs referenced by these runs (for --purge-dataset)
+    cur = conn.execute(f"SELECT DISTINCT dataset_id FROM requests WHERE run_id IN ({placeholders})", run_ids)
+    dataset_ids_used = [row[0] for row in cur.fetchall()]
+    
+    # Dry-run: counts per table
+    counts = {}
+    if request_ids:
+        counts["scores"] = scalar(f"SELECT COUNT(*) FROM scores WHERE request_id IN ({request_placeholders})", *request_ids)
+        counts["failures"] = scalar(f"SELECT COUNT(*) FROM failures WHERE request_id IN ({request_placeholders})", *request_ids)
+        counts["telemetry"] = scalar(f"SELECT COUNT(*) FROM telemetry WHERE request_id IN ({request_placeholders})", *request_ids)
+        counts["responses"] = scalar(f"SELECT COUNT(*) FROM responses WHERE request_id IN ({request_placeholders})", *request_ids)
+    else:
+        counts["scores"] = counts["failures"] = counts["telemetry"] = counts["responses"] = 0
+    counts["requests"] = scalar(f"SELECT COUNT(*) FROM requests WHERE run_id IN ({placeholders})", *run_ids)
+    counts["bin_stats"] = scalar(f"SELECT COUNT(*) FROM bin_stats WHERE run_id IN ({placeholders})", *run_ids)
+    counts["runs"] = len(run_ids)
+    counts["transition_summary"] = 1 if scalar("SELECT 1 FROM transition_summary WHERE exp_group_id = ?", exp_group_id) else 0
+    # We do not delete experiments row so re-running (e.g. `all`) can insert new runs that reference it
+    counts["experiments"] = 0
+    
+    print(f"Target: exp_group_id={exp_group_id} (db={db_p})")
+    print("Would delete (dry-run):")
+    for table, n in counts.items():
+        print(f"  {table}: {n}")
+    
+    ds_placeholders = ",".join("?" * len(dataset_ids_used)) if dataset_ids_used else ""
+    if purge_dataset and dataset_ids_used:
+        # After our deletes, any remaining request with these dataset_ids means "still referenced"
+        still_used = scalar(
+            f"SELECT COUNT(*) FROM requests WHERE dataset_id IN ({ds_placeholders})",
+            *dataset_ids_used
+        ) - counts["requests"]  # exclude requests we're about to delete
+        if still_used > 0:
+            print(f"  purge-dataset: would skip (dataset_ids still referenced by {still_used} other request(s))")
+        else:
+            for did in dataset_ids_used:
+                counts[f"manifest_entries({did})"] = scalar("SELECT COUNT(*) FROM manifest_entries WHERE dataset_id = ?", did)
+                counts[f"examples({did})"] = scalar("SELECT COUNT(*) FROM examples WHERE dataset_id = ?", did)
+                counts[f"bins({did})"] = scalar("SELECT COUNT(*) FROM bins WHERE dataset_id = ?", did)
+            print("  purge-dataset: would also delete dataset cache for:", dataset_ids_used)
+    
+    if not yes:
+        print("Run with --yes to execute deletions.")
+        conn.close()
+        return 0
+    
+    # Execute deletions (FK-safe order)
+    with conn:
+        if request_ids:
+            conn.execute(f"DELETE FROM scores WHERE request_id IN ({request_placeholders})", request_ids)
+            conn.execute(f"DELETE FROM failures WHERE request_id IN ({request_placeholders})", request_ids)
+            conn.execute(f"DELETE FROM telemetry WHERE request_id IN ({request_placeholders})", request_ids)
+            conn.execute(f"DELETE FROM responses WHERE request_id IN ({request_placeholders})", request_ids)
+        conn.execute(f"DELETE FROM requests WHERE run_id IN ({placeholders})", run_ids)
+        conn.execute(f"DELETE FROM bin_stats WHERE run_id IN ({placeholders})", run_ids)
+        conn.execute(f"DELETE FROM runs WHERE run_id IN ({placeholders})", run_ids)
+        conn.execute("DELETE FROM transition_summary WHERE exp_group_id = ?", (exp_group_id,))
+        # Keep experiments row so a subsequent run can insert new runs that reference it
+    
+    if purge_dataset and dataset_ids_used:
+        # After run cleanup, any remaining request with these dataset_ids means do not purge
+        still_used = scalar(
+            f"SELECT COUNT(*) FROM requests WHERE dataset_id IN ({ds_placeholders})",
+            *dataset_ids_used
+        )
+        if still_used:
+            print(f"Warning: Skipping dataset purge (dataset_ids still referenced by {still_used} other request(s)).")
+        else:
+            with conn:
+                for did in dataset_ids_used:
+                    conn.execute("DELETE FROM manifest_entries WHERE dataset_id = ?", (did,))
+                    conn.execute("DELETE FROM examples WHERE dataset_id = ?", (did,))
+                    conn.execute("DELETE FROM bins WHERE dataset_id = ?", (did,))
+                    conn.execute("DELETE FROM datasets WHERE dataset_id = ?", (did,))
+            print("Purged dataset cache for:", dataset_ids_used)
+    
+    print("Clean completed.")
+    conn.close()
+    return 0
+
+
 def cmd_all(config_path: Path, run_id: Optional[str] = None, allow_partial: bool = False, overrides: Optional[Dict[str, Any]] = None) -> int:
     """Run complete pipeline: prepare → run → score → analyze → report (Phase B→C→D→E→F).
     
@@ -1471,6 +1606,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Filter by bin index"
     )
     
+    # clean command
+    clean_parser = subparsers.add_parser(
+        "clean",
+        parents=[common_parser],
+        help="Safely delete run-group artifacts for exp_group_id (dry-run by default; use --yes to execute)"
+    )
+    clean_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Execute deletions (default is dry-run)"
+    )
+    clean_parser.add_argument(
+        "--purge-dataset",
+        action="store_true",
+        help="Also remove dataset cache rows for dataset_ids used only by this exp_group (skipped if still referenced)"
+    )
+    
     # all command
     all_parser = subparsers.add_parser(
         "all",
@@ -1528,6 +1680,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             seed=getattr(args, 'seed', 1337),
             budget=getattr(args, 'budget', None),
             bin_idx=getattr(args, 'bin_idx', None),
+            overrides=overrides
+        )
+    elif args.command == "clean":
+        return cmd_clean(
+            args.config,
+            yes=getattr(args, 'yes', False),
+            purge_dataset=getattr(args, 'purge_dataset', False),
             overrides=overrides
         )
     elif args.command == "all":
