@@ -1038,6 +1038,15 @@ def cmd_sample(
         return 2
 
 
+def _table_exists(conn, name: str) -> bool:
+    """Return True if table `name` exists (via sqlite_master)."""
+    cur = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (name,),
+    )
+    return cur.fetchone() is not None
+
+
 def cmd_clean(
     config_path: Path,
     yes: bool = False,
@@ -1048,6 +1057,7 @@ def cmd_clean(
     
     With --yes, deletes rows in FK-safe order for the target exp_group_id only.
     With --purge-dataset, also removes dataset cache rows if not referenced elsewhere.
+    Missing optional tables (e.g. scores, bin_stats, transition_summary) are skipped.
     """
     try:
         config = load_settings(config_path, overrides=overrides)
@@ -1077,6 +1087,11 @@ def cmd_clean(
         row = cur.fetchone()
         return row[0] if row else 0
     
+    if not _table_exists(conn, "runs"):
+        print("No runs table. Nothing to clean.")
+        conn.close()
+        return 0
+    
     # Resolve run_ids for this exp_group_id
     cur = conn.execute("SELECT run_id FROM runs WHERE exp_group_id = ?", (exp_group_id,))
     run_ids = [row[0] for row in cur.fetchall()]
@@ -1087,29 +1102,37 @@ def cmd_clean(
         return 0
     
     placeholders = ",".join("?" * len(run_ids))
-    # Request IDs for these runs (for child tables)
-    cur = conn.execute(f"SELECT request_id FROM requests WHERE run_id IN ({placeholders})", run_ids)
-    request_ids = [row[0] for row in cur.fetchall()]
+    request_ids: List[str] = []
+    if _table_exists(conn, "requests"):
+        cur = conn.execute(f"SELECT request_id FROM requests WHERE run_id IN ({placeholders})", run_ids)
+        request_ids = [row[0] for row in cur.fetchall()]
     request_placeholders = ",".join("?" * len(request_ids)) if request_ids else ""
     
-    # Dataset IDs referenced by these runs (for --purge-dataset)
-    cur = conn.execute(f"SELECT DISTINCT dataset_id FROM requests WHERE run_id IN ({placeholders})", run_ids)
-    dataset_ids_used = [row[0] for row in cur.fetchall()]
+    dataset_ids_used: List[str] = []
+    if _table_exists(conn, "requests"):
+        cur = conn.execute(f"SELECT DISTINCT dataset_id FROM requests WHERE run_id IN ({placeholders})", run_ids)
+        dataset_ids_used = [row[0] for row in cur.fetchall()]
     
-    # Dry-run: counts per table
-    counts = {}
-    if request_ids:
-        counts["scores"] = scalar(f"SELECT COUNT(*) FROM scores WHERE request_id IN ({request_placeholders})", *request_ids)
-        counts["failures"] = scalar(f"SELECT COUNT(*) FROM failures WHERE request_id IN ({request_placeholders})", *request_ids)
-        counts["telemetry"] = scalar(f"SELECT COUNT(*) FROM telemetry WHERE request_id IN ({request_placeholders})", *request_ids)
-        counts["responses"] = scalar(f"SELECT COUNT(*) FROM responses WHERE request_id IN ({request_placeholders})", *request_ids)
+    # Dry-run: counts per table (missing tables -> 0 or "(missing)")
+    counts: Dict[str, Any] = {}
+    for t in ("scores", "failures", "telemetry", "responses"):
+        if _table_exists(conn, t):
+            counts[t] = scalar(f"SELECT COUNT(*) FROM {t} WHERE request_id IN ({request_placeholders})", *request_ids) if request_ids else 0
+        else:
+            counts[t] = "(missing)"
+    if _table_exists(conn, "requests"):
+        counts["requests"] = scalar(f"SELECT COUNT(*) FROM requests WHERE run_id IN ({placeholders})", *run_ids)
     else:
-        counts["scores"] = counts["failures"] = counts["telemetry"] = counts["responses"] = 0
-    counts["requests"] = scalar(f"SELECT COUNT(*) FROM requests WHERE run_id IN ({placeholders})", *run_ids)
-    counts["bin_stats"] = scalar(f"SELECT COUNT(*) FROM bin_stats WHERE run_id IN ({placeholders})", *run_ids)
+        counts["requests"] = "(missing)"
+    if _table_exists(conn, "bin_stats"):
+        counts["bin_stats"] = scalar(f"SELECT COUNT(*) FROM bin_stats WHERE run_id IN ({placeholders})", *run_ids)
+    else:
+        counts["bin_stats"] = "(missing)"
     counts["runs"] = len(run_ids)
-    counts["transition_summary"] = 1 if scalar("SELECT 1 FROM transition_summary WHERE exp_group_id = ?", exp_group_id) else 0
-    # We do not delete experiments row so re-running (e.g. `all`) can insert new runs that reference it
+    if _table_exists(conn, "transition_summary"):
+        counts["transition_summary"] = 1 if scalar("SELECT 1 FROM transition_summary WHERE exp_group_id = ?", exp_group_id) else 0
+    else:
+        counts["transition_summary"] = "(missing)"
     counts["experiments"] = 0
     
     print(f"Target: exp_group_id={exp_group_id} (db={db_p})")
@@ -1118,19 +1141,23 @@ def cmd_clean(
         print(f"  {table}: {n}")
     
     ds_placeholders = ",".join("?" * len(dataset_ids_used)) if dataset_ids_used else ""
-    if purge_dataset and dataset_ids_used:
+    requests_count = counts["requests"] if isinstance(counts["requests"], int) else 0
+    if purge_dataset and dataset_ids_used and _table_exists(conn, "requests"):
         # After our deletes, any remaining request with these dataset_ids means "still referenced"
         still_used = scalar(
             f"SELECT COUNT(*) FROM requests WHERE dataset_id IN ({ds_placeholders})",
             *dataset_ids_used
-        ) - counts["requests"]  # exclude requests we're about to delete
+        ) - requests_count
         if still_used > 0:
             print(f"  purge-dataset: would skip (dataset_ids still referenced by {still_used} other request(s))")
         else:
             for did in dataset_ids_used:
-                counts[f"manifest_entries({did})"] = scalar("SELECT COUNT(*) FROM manifest_entries WHERE dataset_id = ?", did)
-                counts[f"examples({did})"] = scalar("SELECT COUNT(*) FROM examples WHERE dataset_id = ?", did)
-                counts[f"bins({did})"] = scalar("SELECT COUNT(*) FROM bins WHERE dataset_id = ?", did)
+                if _table_exists(conn, "manifest_entries"):
+                    counts[f"manifest_entries({did})"] = scalar("SELECT COUNT(*) FROM manifest_entries WHERE dataset_id = ?", did)
+                if _table_exists(conn, "examples"):
+                    counts[f"examples({did})"] = scalar("SELECT COUNT(*) FROM examples WHERE dataset_id = ?", did)
+                if _table_exists(conn, "bins"):
+                    counts[f"bins({did})"] = scalar("SELECT COUNT(*) FROM bins WHERE dataset_id = ?", did)
             print("  purge-dataset: would also delete dataset cache for:", dataset_ids_used)
     
     if not yes:
@@ -1138,17 +1165,24 @@ def cmd_clean(
         conn.close()
         return 0
     
-    # Execute deletions (FK-safe order)
+    # Execute deletions (FK-safe order); skip missing tables
     with conn:
         if request_ids:
-            conn.execute(f"DELETE FROM scores WHERE request_id IN ({request_placeholders})", request_ids)
-            conn.execute(f"DELETE FROM failures WHERE request_id IN ({request_placeholders})", request_ids)
-            conn.execute(f"DELETE FROM telemetry WHERE request_id IN ({request_placeholders})", request_ids)
-            conn.execute(f"DELETE FROM responses WHERE request_id IN ({request_placeholders})", request_ids)
-        conn.execute(f"DELETE FROM requests WHERE run_id IN ({placeholders})", run_ids)
-        conn.execute(f"DELETE FROM bin_stats WHERE run_id IN ({placeholders})", run_ids)
+            if _table_exists(conn, "scores"):
+                conn.execute(f"DELETE FROM scores WHERE request_id IN ({request_placeholders})", request_ids)
+            if _table_exists(conn, "failures"):
+                conn.execute(f"DELETE FROM failures WHERE request_id IN ({request_placeholders})", request_ids)
+            if _table_exists(conn, "telemetry"):
+                conn.execute(f"DELETE FROM telemetry WHERE request_id IN ({request_placeholders})", request_ids)
+            if _table_exists(conn, "responses"):
+                conn.execute(f"DELETE FROM responses WHERE request_id IN ({request_placeholders})", request_ids)
+        if _table_exists(conn, "requests"):
+            conn.execute(f"DELETE FROM requests WHERE run_id IN ({placeholders})", run_ids)
+        if _table_exists(conn, "bin_stats"):
+            conn.execute(f"DELETE FROM bin_stats WHERE run_id IN ({placeholders})", run_ids)
         conn.execute(f"DELETE FROM runs WHERE run_id IN ({placeholders})", run_ids)
-        conn.execute("DELETE FROM transition_summary WHERE exp_group_id = ?", (exp_group_id,))
+        if _table_exists(conn, "transition_summary"):
+            conn.execute("DELETE FROM transition_summary WHERE exp_group_id = ?", (exp_group_id,))
         # Keep experiments row so a subsequent run can insert new runs that reference it
     
     if purge_dataset and dataset_ids_used:
@@ -1162,10 +1196,14 @@ def cmd_clean(
         else:
             with conn:
                 for did in dataset_ids_used:
-                    conn.execute("DELETE FROM manifest_entries WHERE dataset_id = ?", (did,))
-                    conn.execute("DELETE FROM examples WHERE dataset_id = ?", (did,))
-                    conn.execute("DELETE FROM bins WHERE dataset_id = ?", (did,))
-                    conn.execute("DELETE FROM datasets WHERE dataset_id = ?", (did,))
+                    if _table_exists(conn, "manifest_entries"):
+                        conn.execute("DELETE FROM manifest_entries WHERE dataset_id = ?", (did,))
+                    if _table_exists(conn, "examples"):
+                        conn.execute("DELETE FROM examples WHERE dataset_id = ?", (did,))
+                    if _table_exists(conn, "bins"):
+                        conn.execute("DELETE FROM bins WHERE dataset_id = ?", (did,))
+                    if _table_exists(conn, "datasets"):
+                        conn.execute("DELETE FROM datasets WHERE dataset_id = ?", (did,))
             print("Purged dataset cache for:", dataset_ids_used)
     
     print("Clean completed.")
