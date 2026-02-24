@@ -1,13 +1,13 @@
 """Data Access Object for Phase B, Phase C, and Phase E database operations.
 
 Provides functions to insert and query datasets, examples, bins, manifest entries,
-runs, requests, responses, telemetry, failures, bin_stats, and transition_summary.
+runs, requests, responses, telemetry, failures, bin_stats, transition_summary, and stage_cache.
 """
 
 import json
 import sqlite3
 from datetime import datetime
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 
 def upsert_dataset(
@@ -530,3 +530,68 @@ def get_transition_summary(
     """, (exp_group_id,))
     
     return cursor.fetchone()
+
+
+# ===== Stage cache operations =====
+
+def get_stage_cache(
+    conn: sqlite3.Connection,
+    exp_group_id: str,
+    stage: str
+) -> Optional[Dict[str, Any]]:
+    """Get stage_cache entry for (exp_group_id, stage).
+    
+    Args:
+        conn: SQLite connection.
+        exp_group_id: Experiment group identifier.
+        stage: Stage name (e.g., "score", "analyze", "report").
+    
+    Returns:
+        Dict with config_hash, inputs_hash, updated_at if present, else None.
+    """
+    cursor = conn.execute("""
+        SELECT config_hash, inputs_hash, updated_at
+        FROM stage_cache
+        WHERE exp_group_id = ? AND stage = ?
+    """, (exp_group_id, stage))
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    try:
+        return {
+            "config_hash": row["config_hash"],
+            "inputs_hash": row["inputs_hash"],
+            "updated_at": row["updated_at"],
+        }
+    except (TypeError, KeyError):
+        return {
+            "config_hash": row[0],
+            "inputs_hash": row[1],
+            "updated_at": row[2],
+        }
+
+
+def upsert_stage_cache(
+    conn: sqlite3.Connection,
+    exp_group_id: str,
+    stage: str,
+    config_hash: str,
+    inputs_hash: str,
+    updated_at: str
+) -> None:
+    """Insert or replace stage_cache row for (exp_group_id, stage).
+    
+    Args:
+        conn: SQLite connection.
+        exp_group_id: Experiment group identifier.
+        stage: Stage name (e.g., "score", "analyze", "report").
+        config_hash: Hash of stage config.
+        inputs_hash: Hash of upstream prerequisite state.
+        updated_at: ISO timestamp (caller-supplied).
+    """
+    with conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO stage_cache
+            (exp_group_id, stage, config_hash, inputs_hash, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (exp_group_id, stage, config_hash, inputs_hash, updated_at))
