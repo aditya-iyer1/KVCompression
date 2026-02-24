@@ -1456,7 +1456,7 @@ Steps
 	•	Measure prompt token count distribution by bin.
 	•	Identify avoidable overhead (system prompt verbosity, duplicated instructions).
 	•	Lock a minimal system instruction.
-2.	Adaptive sampling (architectural policy) (NOT IMPLEMENTED)
+2.	Adaptive sampling (architectural policy) (COMPLETE)
 	•	Keep baseline runs small everywhere.
 	•	Increase n_per_bin only near suspected transition bins.
 	•	Make this an explicit mode (e.g., sampling.strategy = uniform | focus_transition) even if implemented later.
@@ -1464,7 +1464,7 @@ Steps
 	•	Ensure binning/token lengths are never recomputed if dataset_id + tokenizer match.
 	•	Ensure scoring is incremental (skip if score exists).
 	•	Ensure analyze is incremental (skip if bin_stats exists and matches seed/config hash).
-4.	Rate-limit strategy (PARTIAL)
+4.	Rate-limit strategy (COMPLETE)
 	•	Implement a deterministic pacing policy:
 	•	max requests per minute (configurable)
 	•	backoff on 429

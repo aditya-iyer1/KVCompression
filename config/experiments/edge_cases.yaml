@@ -5,8 +5,10 @@
 
 dataset:
   name: longbench
-  task: narrativeqa
+  task: trec
   n_per_bin: 1
+  seed: 1337
+  max_prompt_tokens: 7900
 
 binning:
   n_bins: 1
@@ -41,7 +43,7 @@ analysis:
   seed: 1337
 
 output:
-  exp_group_id: edge_cases_longbench_v1
+  exp_group_id: edge_cases_longbench_trec_v1
 
 db:
   path: auto
