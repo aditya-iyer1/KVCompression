@@ -7,15 +7,17 @@ Phase F: Report generation.
 """
 
 import argparse
+import hashlib
+import json
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import random
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import paths
-from .settings import load_settings
+from .settings import load_settings, stable_config_hash
 
 from dotenv import load_dotenv
 
@@ -443,6 +445,41 @@ def _get_run_ids(conn, exp_group_id: str, run_id: Optional[str] = None) -> List[
     return run_ids
 
 
+def _compute_analyze_inputs_hash(conn, exp_group_id: str, run_ids: List[str]) -> str:
+    """Compute deterministic hash of scores state for the given runs (analyze inputs)."""
+    if not _table_exists(conn, "scores") or not run_ids:
+        payload = json.dumps({"run_ids": sorted(run_ids), "scores": []}, sort_keys=True)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+    placeholders = ",".join("?" * len(run_ids))
+    cursor = conn.execute(f"""
+        SELECT s.request_id, s.em, s.f1, s.acc
+        FROM scores s
+        JOIN requests r ON r.request_id = s.request_id
+        JOIN runs ru ON r.run_id = ru.run_id
+        WHERE ru.exp_group_id = ? AND ru.run_id IN ({placeholders})
+        ORDER BY s.request_id
+    """, (exp_group_id, *run_ids))
+    rows = cursor.fetchall()
+    scores_data = []
+    for row in rows:
+        try:
+            scores_data.append({
+                "request_id": row["request_id"],
+                "em": row["em"],
+                "f1": row["f1"],
+                "acc": row["acc"],
+            })
+        except (TypeError, KeyError):
+            scores_data.append({
+                "request_id": row[0],
+                "em": row[1],
+                "f1": row[2],
+                "acc": row[3],
+            })
+    payload = json.dumps({"run_ids": sorted(run_ids), "scores": scores_data}, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
 def cmd_score(config_path: Path, run_id: Optional[str] = None, overrides: Optional[Dict[str, Any]] = None) -> int:
     """Score completed runs (Phase D).
     
@@ -542,6 +579,23 @@ def cmd_analyze(config_path: Path, run_id: Optional[str] = None, overrides: Opti
     try:
         # Get run_ids to analyze
         run_ids = _get_run_ids(conn, exp_group_id, run_id)
+        
+        # Cache check: skip if config+inputs match and bin_stats already exist
+        config_hash = stable_config_hash(config)
+        inputs_hash = _compute_analyze_inputs_hash(conn, exp_group_id, run_ids)
+        cached = dao.get_stage_cache(conn, exp_group_id, "analyze")
+        if cached and cached["config_hash"] == config_hash and cached["inputs_hash"] == inputs_hash:
+            cur = conn.execute("""
+                SELECT COUNT(*) FROM bin_stats bs
+                JOIN runs r ON bs.run_id = r.run_id
+                WHERE r.exp_group_id = ?
+            """, (exp_group_id,))
+            row = cur.fetchone()
+            bin_count = row[0] if row else 0
+            if bin_count > 0:
+                print("Analyze cache hit (config and inputs unchanged), skipping.")
+                conn.close()
+                return 0
         
         # Import analysis modules
         from .analysis import queries, aggregate, bootstrap, transition, plots
@@ -650,6 +704,10 @@ def cmd_analyze(config_path: Path, run_id: Optional[str] = None, overrides: Opti
                   f"(drop: {transition_result.get('drop', 0):.3f})")
         else:
             print("No transition detected")
+        
+        # Upsert stage_cache on success
+        updated_at = datetime.now(timezone.utc).isoformat()
+        dao.upsert_stage_cache(conn, exp_group_id, "analyze", config_hash, inputs_hash, updated_at)
         
         conn.close()
         return 0
