@@ -1374,7 +1374,7 @@ Steps
 	•	Sample 10 random rows per run:
 	•	compare raw output vs gold by eyeballing
 	•	confirm EM/F1 aligns with human judgment (at least directionally)
-4.	Error budget accounting
+4.	Error budget accounting (COMPLETE)
 	•	For each run: compute a simple “integrity summary” you can trust:
 	•	% empty outputs
 	•	% refusals

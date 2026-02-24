@@ -13,6 +13,7 @@ FORMAT_ERROR = "FORMAT_ERROR"
 REFUSAL = "REFUSAL"
 TIMEOUT = "TIMEOUT"
 CONTEXT_LENGTH_EXCEEDED = "CONTEXT_LENGTH_EXCEEDED"
+RATE_LIMITED = "RATE_LIMITED"
 ENGINE_ERROR = "ENGINE_ERROR"
 
 
@@ -34,7 +35,26 @@ def classify_failure(
     Returns:
         Failure label string or None if not a failure.
     """
-    # Check for empty output first
+    # Check error_message first for rate limit (so 429 is classified even with non-empty text)
+    if error_message:
+        error_lower = error_message.lower()
+        rate_limit_patterns = [
+            "status 429",
+            "http 429",
+            "rate limit",
+            "rate limit reached",
+            "tokens per min",
+            " tpm",
+            "tpm ",
+        ]
+        if any(p in error_lower for p in rate_limit_patterns):
+            return RATE_LIMITED
+        if "please try again" in error_lower and (
+            "rate" in error_lower or "limit" in error_lower or "429" in error_lower
+        ):
+            return RATE_LIMITED
+
+    # Check for empty output
     if text is None or (isinstance(text, str) and not text.strip()):
         return EMPTY_OUTPUT
     
