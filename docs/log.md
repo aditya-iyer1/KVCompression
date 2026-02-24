@@ -1481,7 +1481,7 @@ Goal
 Make failures interpretable and prevent silent wrong results.
 
 Steps
-1.	Edge-case suite (small, deterministic configs) (NOT FORMALLY EXECUTED)
+1.	Edge-case suite (small, deterministic configs) (COMPLETE)
 	•	n_per_bin=1
 	•	n_bins=1
 	•	budgets=[1.0]
@@ -1517,7 +1517,7 @@ Steps
 	•	Is collapse driven by accuracy drop or failures?
 	•	Latency/memory tradeoff (even if memory is “N/A”)
 	•	Limitations (serving stack, metric limitations)
-3.	Terminology lock
+3.	Terminology lock (COMPLETE)
 	•	Define “accuracy” explicitly (F1 mean).
 	•	Define “failure rate.”
 	•	Define “transition zone detector” in 2–3 lines.

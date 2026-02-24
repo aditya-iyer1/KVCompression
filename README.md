@@ -126,6 +126,28 @@ Failures are classified and stored in the `failures` table with an `error_type` 
 
 ---
 
+## Experiment Profiles
+
+- **Submission / OpenAI profile (`sanity.yaml`)**
+  - **Engine**: OpenAI-compatible remote endpoint at `BASE_URL` (e.g., OpenAI API).
+  - **Use case**: Fast sanity check for the submission-style setup against a real hosted engine.
+  - **Command**: `uv run python -m kv_transition all -c config/experiments/sanity.yaml`
+  - **Env vars**: `BASE_URL`, `MODEL_NAME`, `OPENAI_API_KEY` (see Installation).
+
+- **Local vLLM profile (`sanity_vllm_qwen1p5b.yaml`)**
+  - **Engine**: Local vLLM (or other OpenAI-compatible server) exposed at `BASE_URL`.
+  - **Use case**: vLLM-focused sanity run with prompt caps and chat-template-aware token counting.
+  - **Command**: `HF_TOKENIZER_MODEL=Qwen/Qwen2.5-1.5B-Instruct uv run python -m kv_transition all -c config/experiments/sanity_vllm_qwen1p5b.yaml`
+  - **Env vars**: `BASE_URL`, `MODEL_NAME`, `OPENAI_API_KEY`, and **`HF_TOKENIZER_MODEL`** for correct prompt length estimation.
+
+- **Boundary-condition profile (`edge_cases.yaml`)**
+  - **Engine**: Same OpenAI-compatible endpoint as other configs.
+  - **Use case**: Single-bin, single-budget edge-case test for prompt-length caps and very small `max_tokens` (truncation behavior).
+  - **Command**: `uv run python -m kv_transition all -c config/experiments/edge_cases.yaml`
+  - **Env vars**: `BASE_URL`, `MODEL_NAME`, `OPENAI_API_KEY` (no extra tokenizer env required).
+
+---
+
 ## Usage
 
 Individual pipeline steps (using `uv`):
