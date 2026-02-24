@@ -286,10 +286,18 @@ def build_manifest(settings: Dict[str, Any], raw_examples: List[Dict[str, Any]])
     # Optional prompt-length cap (dataset.max_prompt_tokens)
     max_prompt_tokens = settings.get("dataset", {}).get("max_prompt_tokens")
     if max_prompt_tokens is not None:
-        if not isinstance(max_prompt_tokens, int) or max_prompt_tokens <= 0:
+        max_prompt_tokens_raw = max_prompt_tokens
+        try:
+            max_prompt_tokens = int(max_prompt_tokens_raw)
+        except (TypeError, ValueError):
             raise ValueError(
                 f"settings.dataset.max_prompt_tokens must be a positive integer, "
-                f"got {max_prompt_tokens!r}"
+                f"got {max_prompt_tokens_raw!r}"
+            )
+        if max_prompt_tokens <= 0:
+            raise ValueError(
+                f"settings.dataset.max_prompt_tokens must be a positive integer, "
+                f"got {max_prompt_tokens_raw!r}"
             )
         filtered_examples: List[Dict[str, Any]] = []
         filtered_token_lens: List[int] = []
