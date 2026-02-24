@@ -128,6 +128,7 @@ def run_one_setting(
         print(f"  Pacing enabled: {pacing_rpm} RPM ({pacing_interval:.2f}s interval)")
     else:
         pacing_interval = None
+    print(f"  DEBUG pacing_rpm={pacing_rpm} pacing_interval={pacing_interval}")
     
     # Compute prompt template version hash
     prompt_template_version = _compute_prompt_template_version()
