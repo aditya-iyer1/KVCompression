@@ -206,7 +206,9 @@ def score_run(conn: sqlite3.Connection, run_id: str) -> None:
     scores_to_insert = []
     csv_fallback_data = []
     
-    # Process each request
+    # Process each request: only score those with no failure row and non-empty output
+    skipped_failure = 0
+    skipped_no_output = 0
     for req_row in request_rows:
         request_id = req_row["request_id"]
         example_id = req_row["example_id"]
@@ -215,14 +217,21 @@ def score_run(conn: sqlite3.Connection, run_id: str) -> None:
         error_type = req_row["error_type"]
         error_message = req_row["error_message"]
         
+        # Skip unscorable: has failure row (e.g. RATE_LIMITED) or missing/blank model output
+        if error_type is not None:
+            skipped_failure += 1
+            continue
+        if not (pred_text and isinstance(pred_text, str) and pred_text.strip()):
+            skipped_no_output += 1
+            continue
+        
         # Get gold answers
         gold_answers = gold_answers_map.get(example_id, [])
         if not gold_answers:
-            # Skip if no gold answers found
             continue
         
-        # Compute scores (use empty string if pred_text is None)
-        pred_text_for_scoring = pred_text if pred_text else ""
+        # Compute scores for scorable requests only
+        pred_text_for_scoring = pred_text.strip()
         em = best_exact_match(pred_text_for_scoring, gold_answers)
         f1 = best_f1(pred_text_for_scoring, gold_answers)
         
@@ -276,6 +285,13 @@ def score_run(conn: sqlite3.Connection, run_id: str) -> None:
     # Write scores to DB if table exists
     if scores_table_exists:
         with conn:
+            # Remove score rows for requests we skipped (e.g. failures) so table has no misleading rows
+            scored_ids = {s["request_id"] for s in scores_to_insert}
+            cursor = conn.execute("SELECT request_id FROM requests WHERE run_id = ?", (run_id,))
+            for row in cursor.fetchall():
+                req_id = row[0]
+                if req_id not in scored_ids:
+                    conn.execute("DELETE FROM scores WHERE request_id = ?", (req_id,))
             for score_data in scores_to_insert:
                 conn.execute("""
                     INSERT OR REPLACE INTO scores
@@ -291,8 +307,12 @@ def score_run(conn: sqlite3.Connection, run_id: str) -> None:
                 ))
         primary_metric = "F1" if task_name and task_name.lower() == "narrativeqa" else "EM"
         print(f"  Scored {len(scores_to_insert)} requests, wrote to scores table (primary metric: {primary_metric})")
+        if skipped_failure or skipped_no_output:
+            print(f"  Skipped {skipped_failure} unscorable (failure) + {skipped_no_output} (no/empty output)")
     else:
         # Fallback: write to CSV
         csv_path = _write_scores_csv(exp_group_id, csv_fallback_data)
         print(f"  Scored {len(scores_to_insert)} requests, wrote to CSV: {csv_path}")
+        if skipped_failure or skipped_no_output:
+            print(f"  Skipped {skipped_failure} unscorable (failure) + {skipped_no_output} (no/empty output)")
         print(f"  TODO: Add scores table to schema.py for proper DB storage")
