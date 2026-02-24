@@ -31,7 +31,7 @@ kv:
 
 decoding:
   temperature: 0
-  max_tokens: 16
+  max_tokens: 64
 
 analysis:
   seed: 1337
