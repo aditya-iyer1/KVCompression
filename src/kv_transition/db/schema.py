@@ -1,7 +1,7 @@
 """SQLite schema definition for Phase B dataset preparation, Phase C inference logging, and Phase E aggregation.
 
 Creates tables for storing datasets, examples, bins, manifest entries, runs, requests,
-responses, telemetry, failures, bin_stats, and transition_summary.
+responses, telemetry, failures, bin_stats, transition_summary, and stage_cache.
 """
 
 import sqlite3
@@ -11,8 +11,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
     """Initialize database schema with Phase B, Phase C, and Phase E tables.
     
     Creates tables for experiments, datasets, examples, bins, manifest_entries,
-    runs, requests, responses, telemetry, failures, bin_stats, and transition_summary.
-    Uses IF NOT EXISTS for idempotency. Foreign keys are enabled by connect.py.
+    runs, requests, responses, telemetry, failures, bin_stats, transition_summary,
+    and stage_cache. Uses IF NOT EXISTS for idempotency. Foreign keys are enabled by connect.py.
     
     Args:
         conn: SQLite connection (from connect.connect()).
@@ -227,6 +227,18 @@ def init_schema(conn: sqlite3.Connection) -> None:
             transition_bin_idx INTEGER,
             created_at TEXT,
             FOREIGN KEY (exp_group_id) REFERENCES experiments(exp_group_id)
+        )
+    """)
+    
+    # Stage cache (per-exp_group_id stage metadata for skip when inputs/config unchanged)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS stage_cache (
+            exp_group_id TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            config_hash TEXT NOT NULL,
+            inputs_hash TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (exp_group_id, stage)
         )
     """)
     
