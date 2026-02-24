@@ -1358,7 +1358,7 @@ Goal
 Prove the harness is measuring real degradation/instability (not artifacts, false positives, or false negatives).
 
 Steps
-1.	Golden sanity set (IN PROGRESS) 
+1.	Golden sanity set (COMPLETE) 
 	•	Create a tiny fixed set (≈10 examples) with known expected behavior:
 	•	3 short-context “easy wins”
 	•	3 medium-context
@@ -1435,7 +1435,7 @@ Steps
 	•	different n_per_bin
 	•	different max_tokens
 	•	Confirm no assumptions break (e.g., empty bins, too few examples).
-4.	Missing-data resilience (COMPLETE
+4.	Missing-data resilience (COMPLETE)
 	•	Ensure analyze/report still produce useful output when:
 	•	telemetry is partially missing
 	•	some requests failed
