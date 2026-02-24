@@ -19,6 +19,18 @@
 - **Latency p50** is the median request latency per bin in seconds. It is included for completeness; the main tradeoffs in this harness are accuracy and failure rate vs KV budget.
 - **Transition zone** in this harness is the context-length region where accuracy or stability drops as KV cache budget is reduced. It is detected when a sufficient accuracy drop occurs between a higher and a lower budget at a given bin; “no transition detected” means no such drop met the configured threshold.
 
+### Throughput / Rate limiting
+
+{% if experiment and experiment.config_yaml and ('requests_per_minute' in experiment.config_yaml or 'max_rpm' in experiment.config_yaml) %}
+**Pacing:** Configured (run.pacing.requests_per_minute or rate_limit.max_rpm). Implied interval = 60/RPM seconds between request starts.
+{% else %}
+**Pacing:** Not configured in this run (no run.pacing.requests_per_minute or rate_limit.max_rpm).
+{% endif %}
+
+**RATE_LIMITED and failures by type:** See **Integrity Summary** below for counts and %. Per-budget detail: failure-rate plot and DB `failures` table.
+
+**Interpretation:** RPM pacing reduces HTTP 429 (RPM) rate; TPM 429s can still occur with large prompts. Treat RATE_LIMITED spikes as infrastructure artifacts—rerun with lower RPM or exclude from analysis.
+
 ---
 
 {% if transition %}
