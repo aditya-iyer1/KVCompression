@@ -86,6 +86,40 @@ def _is_rate_limit_error(exc: BaseException) -> bool:
     )
 
 
+def _get_http_status(exc: BaseException) -> Optional[int]:
+    """Best-effort extraction of HTTP status code from exception."""
+    # Common attributes: status, status_code, response.status, response.status_code
+    status = getattr(exc, "status", None) or getattr(exc, "status_code", None)
+    resp = getattr(exc, "response", None)
+    if status is None and resp is not None:
+        status = getattr(resp, "status", None) or getattr(resp, "status_code", None)
+    try:
+        return int(status) if status is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_retry_after_seconds(exc: BaseException) -> Optional[float]:
+    """Parse numeric Retry-After header (seconds) if present."""
+    headers = getattr(exc, "headers", None)
+    if headers is None:
+        resp = getattr(exc, "response", None)
+        headers = getattr(resp, "headers", None) if resp is not None else None
+    if not isinstance(headers, dict):
+        return None
+    val = headers.get("Retry-After") or headers.get("retry-after")
+    if val is None:
+        return None
+    try:
+        secs = float(val)
+        if secs < 0:
+            return None
+        return secs
+    except (TypeError, ValueError):
+        # Ignore HTTP-date format for now; caller falls back to exponential backoff
+        return None
+
+
 def _is_tpm_429(msg: str) -> bool:
     """True if error message indicates TPM-style 429 (needs longer backoff)."""
     m = (msg or "").lower()
@@ -377,6 +411,23 @@ def run_one_setting(
                 )
                 break
             except Exception as e:
+                status = _get_http_status(e)
+                # Explicit HTTP 429 handling with Retry-After / exponential backoff
+                if status == 429 and attempt < retry_max_attempts:
+                    retry_after = _get_retry_after_seconds(e)
+                    if retry_after is not None:
+                        sleep_s = min(retry_after, 60.0)
+                    else:
+                        base_delay = retry_backoff_base
+                        sleep_s = base_delay * (2 ** (attempt - 1))
+                        sleep_s = min(sleep_s, retry_backoff_max, 60.0)
+                    print(
+                        f"    Rate limited (HTTP 429): attempt {attempt}/{retry_max_attempts}, "
+                        f"sleeping {sleep_s:.1f}s"
+                    )
+                    time.sleep(sleep_s)
+                    continue
+                # Legacy heuristic rate-limit handling (non-HTTP or unknown status)
                 if _is_rate_limit_error(e) and attempt < retry_max_attempts:
                     is_tpm = _is_tpm_429(str(e))
                     kind = "TPM" if is_tpm else "RPM"
