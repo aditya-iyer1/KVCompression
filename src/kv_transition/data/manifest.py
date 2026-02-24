@@ -209,6 +209,7 @@ def build_manifest(settings: Dict[str, Any], raw_examples: List[Dict[str, Any]])
     n_per_bin = settings.get("dataset", {}).get("n_per_bin")
     n_bins = settings.get("binning", {}).get("n_bins")
     sanity_slices = settings.get("dataset", {}).get("sanity_slices")
+    pinned_entry_indices = settings.get("dataset", {}).get("pinned_entry_indices")
     
     if not dataset_name:
         raise ValueError("settings.dataset.name is required")
@@ -216,9 +217,10 @@ def build_manifest(settings: Dict[str, Any], raw_examples: List[Dict[str, Any]])
         raise ValueError("settings.dataset.task is required")
     if n_bins is None or n_bins < 1:
         raise ValueError("settings.binning.n_bins must be >= 1")
+    use_pinned = isinstance(pinned_entry_indices, list) and len(pinned_entry_indices) > 0
     use_sanity_slices = isinstance(sanity_slices, list) and len(sanity_slices) > 0
-    if not use_sanity_slices and (n_per_bin is None or n_per_bin < 1):
-        raise ValueError("settings.dataset.n_per_bin must be >= 1 when sanity_slices is not set")
+    if not use_pinned and not use_sanity_slices and (n_per_bin is None or n_per_bin < 1):
+        raise ValueError("settings.dataset.n_per_bin must be >= 1 when sanity_slices and pinned_entry_indices are not set")
     
     # Compute dataset_id
     dataset_id = _compute_dataset_id(dataset_name, task)
@@ -238,8 +240,33 @@ def build_manifest(settings: Dict[str, Any], raw_examples: List[Dict[str, Any]])
     # Bin examples (used for bin_edges and bin_idx assignment)
     bin_idxs, bin_edges = binning.bin_examples(token_lens, n_bins)
     
-    # Select examples: by sanity slices or by per-bin selection
-    if use_sanity_slices:
+    n_candidates = len(normalized_examples)
+    
+    # Select examples: pinned indices, sanity slices, or per-bin selection
+    if use_pinned:
+        # Validate: all integers, unique, and in range for this dataset
+        seen = set()
+        resolved = []
+        for i, raw in enumerate(pinned_entry_indices):
+            try:
+                idx = int(raw)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"pinned_entry_indices[{i}] must be an integer, got {type(raw).__name__}: {raw}"
+                )
+            if idx in seen:
+                raise ValueError(f"pinned_entry_indices: duplicate index {idx}")
+            seen.add(idx)
+            if idx < 0 or idx >= n_candidates:
+                raise ValueError(
+                    f"pinned_entry_indices: entry_idx {idx} out of range [0, {n_candidates}) for dataset (total examples={n_candidates})"
+                )
+            resolved.append(idx)
+        # Use stable sorted order so manifest order is deterministic
+        selected_indices = sorted(resolved)
+        n_per_bin = len(selected_indices)
+        print(f"  pinned_entry_indices: {len(selected_indices)} entries")
+    elif use_sanity_slices:
         selected_indices = _select_examples_sanity_slices(
             normalized_examples, token_lens, sanity_slices
         )
@@ -282,6 +309,7 @@ def build_manifest(settings: Dict[str, Any], raw_examples: List[Dict[str, Any]])
         }
     
     # Build manifest
+    n_examples = len(entries)
     manifest = {
         "dataset_id": dataset_id,
         "dataset_name": dataset_name,
@@ -289,6 +317,7 @@ def build_manifest(settings: Dict[str, Any], raw_examples: List[Dict[str, Any]])
         "tokenizer_name": tokenizer_name,
         "n_bins": n_bins,
         "n_per_bin": n_per_bin,
+        "n_examples": n_examples,
         "bin_edges": bin_edges_list,
         "entries": entries,
         "examples": examples_dict  # Dict keyed by example_id
