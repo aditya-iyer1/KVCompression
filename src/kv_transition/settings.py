@@ -3,10 +3,15 @@
 Phase A: Load, merge, validate, and resolve environment variables in config files.
 """
 
+import hashlib
+import json
 import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+
+# Keys (or key substrings, case-insensitive) whose values are redacted before config hashing
+_SECRET_KEY_PATTERNS = ("api_key", "secret", "password", "token")
 
 try:
     import yaml
@@ -154,6 +159,33 @@ def _validate_settings(config: Dict[str, Any]) -> List[str]:
             errors.append(f"Key db.path must be str or null, got {type(db_path).__name__}")
     
     return errors
+
+
+def _redact_secrets_for_hash(obj: Any) -> Any:
+    """Deep copy obj, replacing values for secret-like keys with '<redacted>' (dict/list only)."""
+    if isinstance(obj, dict):
+        out: Dict[str, Any] = {}
+        for k, v in obj.items():
+            if any(p in k.lower() for p in _SECRET_KEY_PATTERNS):
+                out[k] = "<redacted>"
+            else:
+                out[k] = _redact_secrets_for_hash(v)
+        return out
+    if isinstance(obj, list):
+        return [_redact_secrets_for_hash(item) for item in obj]
+    return obj
+
+
+def stable_config_hash(settings: Dict[str, Any]) -> str:
+    """Produce a stable short hex digest of the settings dict for caching decisions.
+
+    Canonicalizes via JSON with sort_keys=True; redacts known secret key values
+    so the hash does not depend on env-expanded secrets.
+    """
+    canonical = _redact_secrets_for_hash(settings)
+    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return digest[:24]
 
 
 def load_settings(
