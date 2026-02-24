@@ -6,6 +6,7 @@ Executes manifest entries for a single KV setting and persists results to DB.
 import hashlib
 import inspect
 import json
+import random
 import sqlite3
 import time
 from datetime import datetime
@@ -71,6 +72,38 @@ def _build_messages(context: str, question: str) -> list[Dict[str, str]]:
     ]
 
 
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    """True if exception looks like HTTP 429 / rate limit."""
+    msg = (str(exc) or "").lower()
+    return (
+        "429" in msg
+        or "rate limit" in msg
+        or "rate limit reached" in msg
+        or "tokens per min" in msg
+        or " tpm" in msg
+        or "tpm " in msg
+    )
+
+
+def _is_tpm_429(msg: str) -> bool:
+    """True if error message indicates TPM-style 429 (needs longer backoff)."""
+    m = (msg or "").lower()
+    return "tokens per min" in m or " tpm" in m or "tpm " in m
+
+
+def _backoff_seconds(
+    attempt: int,
+    is_tpm: bool,
+    base_s: float,
+    max_s: float,
+) -> float:
+    """Exponential backoff with jitter. TPM uses larger effective base (min 10s)."""
+    effective_base = max(base_s * 2, 10.0) if is_tpm else base_s
+    raw = min(effective_base * (2 ** (attempt - 1)), max_s)
+    jitter = 0.5 * raw * (random.random() * 2 - 1)  # ±50%
+    return max(0.0, raw + jitter)
+
+
 def run_one_setting(
     conn: sqlite3.Connection,
     settings: Dict[str, Any],
@@ -133,6 +166,30 @@ def run_one_setting(
         print(f"  Pacing enabled: {pacing_rpm} RPM ({pacing_interval:.2f}s interval)")
     else:
         pacing_interval = None
+    
+    # 429 retry config (conservative defaults when run.retries not set)
+    retries_cfg = settings.get("run", {}).get("retries", {})
+    retry_max_attempts = retries_cfg.get("max_attempts")
+    if retry_max_attempts is None:
+        retry_max_attempts = 3
+    else:
+        try:
+            retry_max_attempts = int(retry_max_attempts)
+            retry_max_attempts = max(1, min(retry_max_attempts, 10))
+        except (TypeError, ValueError):
+            retry_max_attempts = 3
+    retry_backoff_base = 2.0
+    try:
+        retry_backoff_base = float(retries_cfg.get("backoff_base_s", retry_backoff_base))
+        retry_backoff_base = max(0.5, min(retry_backoff_base, 60.0))
+    except (TypeError, ValueError):
+        pass
+    retry_backoff_max = 30.0
+    try:
+        retry_backoff_max = float(retries_cfg.get("backoff_max_s", retry_backoff_max))
+        retry_backoff_max = max(retry_backoff_base, min(retry_backoff_max, 300.0))
+    except (TypeError, ValueError):
+        pass
     
     # Compute prompt template version hash
     prompt_template_version = _compute_prompt_template_version()
@@ -259,34 +316,43 @@ def run_one_setting(
                     time.sleep(pacing_interval - elapsed)
             _last_request_monotonic = time.monotonic()
         
-        # Call engine
-        try:
-            result = engine.generate(
-                messages=messages,
-                model=model_name,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                timeout_s=timeout_s,
-            )
-            
-            # Extract result data
+        # Call engine with 429 retry and backoff
+        result = None
+        last_error = None
+        for attempt in range(1, retry_max_attempts + 1):
+            try:
+                result = engine.generate(
+                    messages=messages,
+                    model=model_name,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout_s=timeout_s,
+                )
+                break
+            except Exception as e:
+                if _is_rate_limit_error(e) and attempt < retry_max_attempts:
+                    is_tpm = _is_tpm_429(str(e))
+                    kind = "TPM" if is_tpm else "RPM"
+                    sleep_s = _backoff_seconds(attempt, is_tpm, retry_backoff_base, retry_backoff_max)
+                    print(f"    Rate limited (429, {kind}): attempt {attempt}/{retry_max_attempts}, sleeping {sleep_s:.1f}s")
+                    time.sleep(sleep_s)
+                else:
+                    last_error = e
+                    break
+        
+        if result is not None:
+            # Success: extract and persist
             text = result.text
             finish_reason = result.finish_reason
             raw = result.raw or {}
-            
-            # Extract usage
             usage = result.usage or {}
             prompt_tokens = usage.get("prompt_tokens")
             completion_tokens = usage.get("completion_tokens")
             total_tokens = usage.get("total_tokens")
             if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
                 total_tokens = prompt_tokens + completion_tokens
-            
-            # Extract timings
             timings = result.timings or {}
             latency_s = timings.get("latency_s")
-            
-            # Persist response row
             response_id = str(uuid4())
             dao.insert_response(
                 conn=conn,
@@ -297,8 +363,6 @@ def run_one_setting(
                 usage=usage,
                 raw=raw,
             )
-            
-            # Persist telemetry row
             telemetry = {
                 "latency_s": latency_s,
                 "ttfb_s": timings.get("ttfb_s"),
@@ -308,33 +372,24 @@ def run_one_setting(
                 "notes": None,
             }
             dao.upsert_telemetry(conn, request_id=request_id, telemetry=telemetry)
-            
-            # Clean up any existing failure row for this request_id (success overwrites failure)
             conn.execute("DELETE FROM failures WHERE request_id = ?", (request_id,))
-            
-            # Progress logging
             if (idx + 1) % 10 == 0 or (idx + 1) == len(manifest_entries):
                 print(f"    Processed {idx + 1}/{len(manifest_entries)} entries")
-        
-        except Exception as e:
-            # Error handling: record failure and continue
-            print(f"    Error processing entry {idx} (example_id={example_id}): {e}")
-            
-            # Check if response already exists for this request_id
-            # If it does, skip recording failure to avoid inconsistent state
-            cursor = conn.execute(
-                "SELECT 1 FROM responses WHERE request_id = ?",
-                (request_id,)
-            )
-            response_exists = cursor.fetchone() is not None
-            
-            if not response_exists:
-                # Only record failure if no response was persisted; classify (e.g. 429 -> RATE_LIMITED)
-                message = str(e)
-                label = classify_failure(text="", finish_reason=None, error_message=message)
-                error_type = label if label is not None else type(e).__name__
-                dao.upsert_failure(conn, request_id=request_id, error_type=error_type, message=message)
-            
             continue
+        
+        # All retries failed or non-429 error: record failure
+        e = last_error
+        print(f"    Error processing entry {idx} (example_id={example_id}): {e}")
+        cursor = conn.execute(
+            "SELECT 1 FROM responses WHERE request_id = ?",
+            (request_id,)
+        )
+        response_exists = cursor.fetchone() is not None
+        if not response_exists:
+            message = str(e)
+            label = classify_failure(text="", finish_reason=None, error_message=message)
+            error_type = label if label is not None else type(e).__name__
+            dao.upsert_failure(conn, request_id=request_id, error_type=error_type, message=message)
+        continue
     
     print(f"  Completed processing for run_id={run_id}")

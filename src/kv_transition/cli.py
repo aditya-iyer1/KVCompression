@@ -1497,7 +1497,38 @@ def cmd_validate(config_path: Path, overrides: Optional[Dict[str, Any]] = None, 
         return 2
     
     # Print warnings if any
-    warnings = config.get("_warnings", [])
+    warnings = list(config.get("_warnings", []))
+    
+    # Pacing / rate-limit advisory warnings (do not block)
+    run_rpm = config.get("run", {}).get("pacing", {}).get("requests_per_minute")
+    engine_rpm = config.get("engine", {}).get("rate_limit", {}).get("max_rpm")
+    run_rpm_ok = False
+    engine_rpm_ok = False
+    if run_rpm is not None:
+        try:
+            v = int(run_rpm)
+            run_rpm_ok = v > 0
+        except (TypeError, ValueError):
+            pass
+        if not run_rpm_ok:
+            warnings.append(
+                "run.pacing.requests_per_minute is set but not a positive integer; will be ignored at run time."
+            )
+    if engine_rpm is not None:
+        try:
+            v = int(engine_rpm)
+            engine_rpm_ok = v > 0
+        except (TypeError, ValueError):
+            pass
+        if not engine_rpm_ok:
+            warnings.append(
+                "engine.rate_limit.max_rpm is set but not a positive integer; will be ignored at run time."
+            )
+    if run_rpm is not None and engine_rpm is not None and run_rpm_ok and engine_rpm_ok:
+        warnings.append(
+            "Both run.pacing.requests_per_minute and engine.rate_limit.max_rpm are set; run.pacing.* takes precedence."
+        )
+    
     for warning in warnings:
         print(f"WARN: {warning}", file=sys.stderr)
     
@@ -1505,7 +1536,10 @@ def cmd_validate(config_path: Path, overrides: Optional[Dict[str, Any]] = None, 
     if print_config_flag:
         _print_config(config)
     
-    print("OK")
+    if warnings:
+        print("OK (with warnings)")
+    else:
+        print("OK")
     return 0
 
 
