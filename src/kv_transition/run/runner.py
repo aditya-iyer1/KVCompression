@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional
 
 from ..db import dao
 from ..engines.base import BaseEngine
+from ..eval.failure_taxonomy import classify_failure
 
 # Global pacer: monotonic time of last request start (persists across budgets in same process)
 _last_request_monotonic: Optional[float] = None
@@ -312,9 +313,10 @@ def run_one_setting(
             response_exists = cursor.fetchone() is not None
             
             if not response_exists:
-                # Only record failure if no response was persisted
-                error_type = type(e).__name__
+                # Only record failure if no response was persisted; classify (e.g. 429 -> RATE_LIMITED)
                 message = str(e)
+                label = classify_failure(text="", finish_reason=None, error_message=message)
+                error_type = label if label is not None else type(e).__name__
                 dao.upsert_failure(conn, request_id=request_id, error_type=error_type, message=message)
             
             continue
