@@ -1456,15 +1456,15 @@ Steps
 	•	Measure prompt token count distribution by bin.
 	•	Identify avoidable overhead (system prompt verbosity, duplicated instructions).
 	•	Lock a minimal system instruction.
-2.	Adaptive sampling (architectural policy)
+2.	Adaptive sampling (architectural policy) (NOT IMPLEMENTED)
 	•	Keep baseline runs small everywhere.
 	•	Increase n_per_bin only near suspected transition bins.
 	•	Make this an explicit mode (e.g., sampling.strategy = uniform | focus_transition) even if implemented later.
-3.	Caching & reuse
+3.	Caching & reuse (PARTIAL)
 	•	Ensure binning/token lengths are never recomputed if dataset_id + tokenizer match.
 	•	Ensure scoring is incremental (skip if score exists).
 	•	Ensure analyze is incremental (skip if bin_stats exists and matches seed/config hash).
-4.	Rate-limit strategy
+4.	Rate-limit strategy (PARTIAL)
 	•	Implement a deterministic pacing policy:
 	•	max requests per minute (configurable)
 	•	backoff on 429
@@ -1481,13 +1481,13 @@ Goal
 Make failures interpretable and prevent silent wrong results.
 
 Steps
-1.	Edge-case suite (small, deterministic configs)
+1.	Edge-case suite (small, deterministic configs) (NOT FORMALLY EXECUTED)
 	•	n_per_bin=1
 	•	n_bins=1
 	•	budgets=[1.0]
 	•	max_tokens extremely small (forces truncation)
 	•	empty/very-short context examples (if dataset allows)
-2.	Integrity invariants enforced everywhere
+2.	Integrity invariants enforced everywhere (COMPLETE)
 	•	Hard fail analyze/report if prerequisites missing (COMPLETE)
 	•	analyze requires scores for all requests (or explicit partial mode) (DONE)
 	•	report requires bin_stats + plots (or degrade gracefully with warning) 

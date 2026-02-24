@@ -5,7 +5,7 @@ Creates the portable manifest.json artifact that defines the evaluation set.
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from ..paths import processed_dir, manifest_path
 
@@ -94,6 +94,46 @@ def _select_examples_per_bin(
         selected_indices.extend(bin_example_indices[:n_per_bin])
     
     return selected_indices
+
+
+def _select_examples_per_bin_adaptive(
+    examples: List[Dict[str, Any]],
+    bin_idxs: List[int],
+    token_lens: List[int],
+    n_bins: int,
+    n_per_bin_by_bin: List[int],
+) -> Tuple[List[int], List[int]]:
+    """Select examples per bin with per-bin caps (deterministic).
+    
+    Same stable sort as _select_examples_per_bin: within each bin sort by
+    (token_len ASC, example_id ASC), take first n_per_bin_by_bin[bin_idx].
+    
+    Returns:
+        (selected_indices, per_bin_n) where per_bin_n[i] is count selected from bin i.
+    """
+    if len(n_per_bin_by_bin) != n_bins:
+        raise ValueError(f"n_per_bin_by_bin length must be n_bins ({n_bins}), got {len(n_per_bin_by_bin)}")
+    
+    bin_groups: Dict[int, List[int]] = {i: [] for i in range(n_bins)}
+    for idx, bin_idx in enumerate(bin_idxs):
+        bin_groups[bin_idx].append(idx)
+    
+    selected_indices = []
+    per_bin_n = [0] * n_bins
+    
+    for bin_idx in range(n_bins):
+        cap = n_per_bin_by_bin[bin_idx]
+        bin_example_indices = bin_groups[bin_idx]
+        if not bin_example_indices:
+            continue
+        bin_example_indices.sort(
+            key=lambda idx: (token_lens[idx], examples[idx]["example_id"])
+        )
+        take = bin_example_indices[:cap]
+        selected_indices.extend(take)
+        per_bin_n[bin_idx] = len(take)
+    
+    return selected_indices, per_bin_n
 
 
 def _select_examples_sanity_slices(
@@ -219,8 +259,11 @@ def build_manifest(settings: Dict[str, Any], raw_examples: List[Dict[str, Any]])
         raise ValueError("settings.binning.n_bins must be >= 1")
     use_pinned = isinstance(pinned_entry_indices, list) and len(pinned_entry_indices) > 0
     use_sanity_slices = isinstance(sanity_slices, list) and len(sanity_slices) > 0
-    if not use_pinned and not use_sanity_slices and (n_per_bin is None or n_per_bin < 1):
-        raise ValueError("settings.dataset.n_per_bin must be >= 1 when sanity_slices and pinned_entry_indices are not set")
+    sampling_strategy = (settings.get("sampling") or {}).get("strategy", "uniform")
+    if sampling_strategy is None:
+        sampling_strategy = "uniform"
+    if not use_pinned and not use_sanity_slices and sampling_strategy == "uniform" and (n_per_bin is None or n_per_bin < 1):
+        raise ValueError("settings.dataset.n_per_bin must be >= 1 when sanity_slices and pinned_entry_indices are not set and sampling.strategy is uniform")
     
     # Compute dataset_id
     dataset_id = _compute_dataset_id(dataset_name, task)
@@ -265,16 +308,72 @@ def build_manifest(settings: Dict[str, Any], raw_examples: List[Dict[str, Any]])
         # Use stable sorted order so manifest order is deterministic
         selected_indices = sorted(resolved)
         n_per_bin = len(selected_indices)
+        per_bin_n = None
         print(f"  pinned_entry_indices: {len(selected_indices)} entries")
     elif use_sanity_slices:
         selected_indices = _select_examples_sanity_slices(
             normalized_examples, token_lens, sanity_slices
         )
         n_per_bin = len(selected_indices)  # for manifest metadata
+        per_bin_n = None
     else:
-        selected_indices = _select_examples_per_bin(
-            normalized_examples, bin_idxs, token_lens, n_bins, n_per_bin
-        )
+        # Per-bin selection: uniform or focus_transition
+        sampling = settings.get("sampling", {})
+        strategy = sampling.get("strategy", "uniform")
+        if strategy is None:
+            strategy = "uniform"
+        if strategy == "uniform":
+            selected_indices = _select_examples_per_bin(
+                normalized_examples, bin_idxs, token_lens, n_bins, n_per_bin
+            )
+            per_bin_n = None  # no per-bin breakdown for uniform
+        elif strategy == "focus_transition":
+            focus = sampling.get("focus")
+            if not focus or not isinstance(focus, dict):
+                raise ValueError(
+                    "sampling.strategy is focus_transition but sampling.focus is missing or not a dict"
+                )
+            focus_bins = focus.get("focus_bins")
+            if not isinstance(focus_bins, list) or len(focus_bins) == 0:
+                raise ValueError("sampling.focus.focus_bins must be a non-empty list")
+            base_n_per_bin = focus.get("base_n_per_bin")
+            if base_n_per_bin is None or not isinstance(base_n_per_bin, int) or base_n_per_bin < 1:
+                raise ValueError("sampling.focus.base_n_per_bin must be an integer >= 1")
+            focus_n_per_bin = focus.get("focus_n_per_bin")
+            if focus_n_per_bin is None or not isinstance(focus_n_per_bin, int) or focus_n_per_bin < 1:
+                raise ValueError("sampling.focus.focus_n_per_bin must be an integer >= 1")
+            focus_radius_bins = focus.get("focus_radius_bins", 0)
+            if focus_radius_bins is None:
+                focus_radius_bins = 0
+            if not isinstance(focus_radius_bins, int) or focus_radius_bins < 0:
+                raise ValueError("sampling.focus.focus_radius_bins must be a non-negative integer")
+            for i, b in enumerate(focus_bins):
+                if not isinstance(b, int):
+                    raise ValueError(
+                        f"sampling.focus.focus_bins[{i}] must be an integer, got {type(b).__name__}"
+                    )
+            window_bins = set()
+            for b in focus_bins:
+                for r in range(b - focus_radius_bins, b + focus_radius_bins + 1):
+                    if 0 <= r < n_bins:
+                        window_bins.add(r)
+            window_bins_list = sorted(window_bins)
+            n_per_bin_by_bin = [
+                focus_n_per_bin if i in window_bins else base_n_per_bin
+                for i in range(n_bins)
+            ]
+            selected_indices, per_bin_n = _select_examples_per_bin_adaptive(
+                normalized_examples, bin_idxs, token_lens, n_bins, n_per_bin_by_bin
+            )
+            n_per_bin = max(per_bin_n) if per_bin_n else 0  # for manifest compatibility
+            print(
+                f"  sampling_focus: base={base_n_per_bin} focus={focus_n_per_bin} "
+                f"window_bins={window_bins_list} total={len(selected_indices)}"
+            )
+        else:
+            raise ValueError(
+                f"Unsupported sampling.strategy: {strategy!r}. Use 'uniform' or 'focus_transition'."
+            )
     
     # Build bin_edges structure
     bin_edges_list = [
@@ -322,7 +421,9 @@ def build_manifest(settings: Dict[str, Any], raw_examples: List[Dict[str, Any]])
         "entries": entries,
         "examples": examples_dict  # Dict keyed by example_id
     }
-    
+    if per_bin_n is not None:
+        manifest["per_bin_n"] = per_bin_n
+
     return manifest
 
 
