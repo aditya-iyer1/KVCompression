@@ -264,10 +264,31 @@ def run_one_setting(
         missing = set(example_ids) - set(examples.keys())
         print(f"  Warning: {len(missing)} examples not found in DB")
     
-    # Extract decoding parameters
+    # Extract decoding / generation parameters
     decoding = settings.get("decoding", {})
     temperature = decoding.get("temperature", 0.0)
     max_tokens = decoding.get("max_tokens", 256)
+    generation = settings.get("generation", {})
+    gen_max_tokens = generation.get("max_tokens", max_tokens)
+    try:
+        gen_max_tokens_int = int(gen_max_tokens)
+    except (TypeError, ValueError):
+        gen_max_tokens_int = max_tokens if isinstance(max_tokens, int) else 256
+    if gen_max_tokens_int < 0:
+        gen_max_tokens_int = 0
+    # Model max context length (fallback to 8192)
+    model_max_len = settings.get("model", {}).get("max_model_len", 8192)
+    try:
+        model_max_len_int = int(model_max_len)
+    except (TypeError, ValueError):
+        model_max_len_int = 8192
+    if model_max_len_int <= 0:
+        model_max_len_int = 8192
+    # Runtime prompt cap: model_max_len - max_new_tokens - safety buffer
+    runtime_prompt_cap: Optional[int] = None
+    cap_candidate = model_max_len_int - gen_max_tokens_int - 256
+    if cap_candidate > 0:
+        runtime_prompt_cap = cap_candidate
     
     # Extract timeout
     timeout_s = None
@@ -308,36 +329,29 @@ def run_one_setting(
             max_tokens=max_tokens,
             timeout_s=timeout_s,
         )
-        
-        # Optional prompt length guard (dataset.max_prompt_tokens)
-        max_prompt_tokens = settings.get("dataset", {}).get("max_prompt_tokens")
-        if max_prompt_tokens is not None:
-            try:
-                max_prompt_tokens_int = int(max_prompt_tokens)
-            except (TypeError, ValueError):
-                max_prompt_tokens_int = None
-            if max_prompt_tokens_int is not None and max_prompt_tokens_int > 0:
-                # Use same prompt construction as Phase B for length counting
-                prompt_text = context + "\n\n" + question
-                prompt_token_count = tokenizer.count_tokens(
-                    prompt_text,
-                    tokenizer_name if tokenizer_name else None,
+        # Optional runtime prompt length guard (model context window)
+        if runtime_prompt_cap is not None:
+            # Use same prompt construction as Phase B for length counting
+            prompt_text = context + "\n\n" + question
+            prompt_token_count = tokenizer.count_tokens(
+                prompt_text,
+                tokenizer_name if tokenizer_name else None,
+            )
+            if prompt_token_count > runtime_prompt_cap:
+                print(
+                    f"Skipped example {example_id}: runtime prompt too long "
+                    f"({prompt_token_count} > {runtime_prompt_cap})"
                 )
-                if prompt_token_count > max_prompt_tokens_int:
-                    print(
-                        f"Skipped example {example_id}: prompt too long "
-                        f"({prompt_token_count} > {max_prompt_tokens_int})"
-                    )
-                    message = (
-                        f"prompt too long: {prompt_token_count} > {max_prompt_tokens_int}"
-                    )
-                    dao.upsert_failure(
-                        conn=conn,
-                        request_id=request_id,
-                        error_type="prompt_too_long",
-                        message=message,
-                    )
-                    continue
+                message = (
+                    f"runtime prompt too long: {prompt_token_count} > {runtime_prompt_cap}"
+                )
+                dao.upsert_failure(
+                    conn=conn,
+                    request_id=request_id,
+                    error_type="runtime_prompt_too_long",
+                    message=message,
+                )
+                continue
         
         # Optional RPM pacing: sleep if needed so interval between request starts >= pacing_interval
         global _last_request_monotonic
