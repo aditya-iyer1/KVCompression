@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 from ..db import dao
 from ..engines.base import BaseEngine
 from ..eval.failure_taxonomy import classify_failure
+from ..data import tokenizer
 
 # Global pacer: monotonic time of last request start (persists across budgets in same process)
 _last_request_monotonic: Optional[float] = None
@@ -241,6 +242,8 @@ def run_one_setting(
     dataset_name = settings["dataset"]["name"]
     task = settings["dataset"]["task"]
     dataset_id = _compute_dataset_id(dataset_name, task)
+    # Tokenizer name for prompt length guard (reuse Phase B logic)
+    tokenizer_name = tokenizer.get_tokenizer_name(settings)
     
     # Read manifest entries from DB
     manifest_entries = dao.get_manifest_entries(conn, dataset_id)
@@ -305,6 +308,36 @@ def run_one_setting(
             max_tokens=max_tokens,
             timeout_s=timeout_s,
         )
+        
+        # Optional prompt length guard (dataset.max_prompt_tokens)
+        max_prompt_tokens = settings.get("dataset", {}).get("max_prompt_tokens")
+        if max_prompt_tokens is not None:
+            try:
+                max_prompt_tokens_int = int(max_prompt_tokens)
+            except (TypeError, ValueError):
+                max_prompt_tokens_int = None
+            if max_prompt_tokens_int is not None and max_prompt_tokens_int > 0:
+                # Use same prompt construction as Phase B for length counting
+                prompt_text = context + "\n\n" + question
+                prompt_token_count = tokenizer.count_tokens(
+                    prompt_text,
+                    tokenizer_name if tokenizer_name else None,
+                )
+                if prompt_token_count > max_prompt_tokens_int:
+                    print(
+                        f"Skipped example {example_id}: prompt too long "
+                        f"({prompt_token_count} > {max_prompt_tokens_int})"
+                    )
+                    message = (
+                        f"prompt too long: {prompt_token_count} > {max_prompt_tokens_int}"
+                    )
+                    dao.upsert_failure(
+                        conn=conn,
+                        request_id=request_id,
+                        error_type="prompt_too_long",
+                        message=message,
+                    )
+                    continue
         
         # Optional RPM pacing: sleep if needed so interval between request starts >= pacing_interval
         global _last_request_monotonic
