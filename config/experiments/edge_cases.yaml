@@ -1,0 +1,47 @@
+# Edge-case experiment: boundary conditions (single bin, single budget, minimal sampling, tiny max_tokens)
+# Exercises: n_bins=1, budgets=[1.0], n_per_bin=1, very small max_tokens (truncation).
+# Usage: uv run python -m kv_transition all -c config/experiments/edge_cases.yaml
+# Expect: prepare/run/score/analyze/report complete without error on single bin/budget.
+
+dataset:
+  name: longbench
+  task: narrativeqa
+  n_per_bin: 1
+
+binning:
+  n_bins: 1
+
+model:
+  name: ${MODEL_NAME}
+
+engine:
+  name: openai_compat
+  base_url: ${BASE_URL}
+  api_key_env: OPENAI_API_KEY
+  request:
+    timeout_s: 60
+
+kv:
+  policy: snapkv
+  budgets: [1.0]
+
+decoding:
+  temperature: 0
+  max_tokens: 8
+
+run:
+  pacing:
+    requests_per_minute: 30
+  retries:
+    max_attempts: 3
+    backoff_base_s: 2.0
+    backoff_max_s: 30.0
+
+analysis:
+  seed: 1337
+
+output:
+  exp_group_id: edge_cases_longbench_v1
+
+db:
+  path: auto
