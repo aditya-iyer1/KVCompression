@@ -4,14 +4,20 @@ Creates the portable manifest.json artifact that defines the evaluation set.
 """
 
 import json
+import os
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..paths import processed_dir, manifest_path
 
 from . import binning
 from . import normalize
 from . import tokenizer
+
+try:  # Optional dependency for chat-template-based token counting
+    from transformers import AutoTokenizer  # type: ignore[import]
+except Exception:  # pragma: no cover - absence is an expected fallback
+    AutoTokenizer = None  # type: ignore[assignment]
 
 
 def _compute_dataset_id(dataset_name: str, task: str) -> str:
@@ -271,14 +277,110 @@ def build_manifest(settings: Dict[str, Any], raw_examples: List[Dict[str, Any]])
     # Normalize examples
     normalized_examples = normalize.normalize_longbench_examples(raw_examples, task)
     
-    # Get tokenizer name
+    # Get tokenizer name (fallback path)
     tokenizer_name = tokenizer.get_tokenizer_name(settings)
     
-    # Compute token lengths for each example
-    token_lens = [
-        _compute_token_length(ex, tokenizer_name)
-        for ex in normalized_examples
-    ]
+    # Optional chat-template-based token counting for chat models (vLLM/OpenAI-compatible)
+    chat_tokenizer = None
+    chat_tokenizer_model: Optional[str] = None
+    chat_warned = False
+    # Priority: env HF_TOKENIZER_MODEL, settings.run.hf_tokenizer_model, settings.run.model_name (if repo id)
+    env_model = os.getenv("HF_TOKENIZER_MODEL")
+    run_cfg = settings.get("run", {}) or {}
+    if isinstance(env_model, str) and env_model.strip():
+        chat_tokenizer_model = env_model.strip()
+    else:
+        cfg_model = run_cfg.get("hf_tokenizer_model")
+        if isinstance(cfg_model, str) and cfg_model.strip():
+            chat_tokenizer_model = cfg_model.strip()
+        else:
+            run_model_name = run_cfg.get("model_name")
+            if isinstance(run_model_name, str) and "/" in run_model_name:
+                chat_tokenizer_model = run_model_name.strip()
+    if chat_tokenizer_model and AutoTokenizer is not None:
+        try:
+            chat_tokenizer = AutoTokenizer.from_pretrained(
+                chat_tokenizer_model,
+                trust_remote_code=True,
+            )
+            if not hasattr(chat_tokenizer, "apply_chat_template"):
+                raise AttributeError("tokenizer has no apply_chat_template")
+        except Exception as e:  # pragma: no cover - best effort, falls back
+            print(
+                f"  WARN: chat-template token counting disabled "
+                f"for model={chat_tokenizer_model!r}; falling back to base tokenizer ({e})"
+            )
+            chat_tokenizer = None
+            chat_warned = True
+    
+    def _chat_token_len(example: Dict[str, Any]) -> Optional[int]:
+        nonlocal chat_tokenizer, chat_warned
+        if chat_tokenizer is None:
+            return None
+        try:
+            context = example.get("context", "")
+            question = example.get("question", "")
+            messages = [
+                {
+                    "role": "system",
+                    "content": "Answer the question using the provided context.",
+                },
+                {
+                    "role": "user",
+                    "content": f"Context:\n{context}\n\nQuestion:\n{question}",
+                },
+            ]
+            # Prefer tokenize=True if supported (returns list[int] or similar)
+            try:
+                tokens = chat_tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=True,
+                )
+                if isinstance(tokens, list):
+                    return len(tokens)
+                if isinstance(tokens, dict) and "input_ids" in tokens:
+                    ids = tokens["input_ids"]
+                    # ids can be list[int] or list[list[int]]
+                    if isinstance(ids, list) and ids and isinstance(ids[0], list):
+                        return len(ids[0])
+                    if isinstance(ids, list):
+                        return len(ids)
+            except TypeError:
+                # Older signature without tokenize kwarg – fall through to string path
+                pass
+            # Fallback: get rendered prompt string, then tokenize
+            rendered = chat_tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+            )
+            enc = chat_tokenizer(
+                rendered,
+                add_special_tokens=False,
+            )
+            ids = enc.get("input_ids", [])
+            if isinstance(ids, list) and ids and isinstance(ids[0], list):
+                return len(ids[0])
+            if isinstance(ids, list):
+                return len(ids)
+            return None
+        except Exception as e:  # pragma: no cover - defensive; fall back once
+            if not chat_warned:
+                print(
+                    f"  WARN: chat-template token counting failed; "
+                    f"falling back to base tokenizer ({e})"
+                )
+                chat_warned = True
+            chat_tokenizer = None
+            return None
+    
+    # Compute token lengths for each example (chat-template path if available)
+    token_lens: List[int] = []
+    for ex in normalized_examples:
+        chat_len = _chat_token_len(ex) if chat_tokenizer is not None else None
+        if isinstance(chat_len, int) and chat_len >= 0:
+            token_lens.append(chat_len)
+        else:
+            token_lens.append(_compute_token_length(ex, tokenizer_name))
     
     # Bin examples (used for bin_edges and bin_idx assignment)
     bin_idxs, bin_edges = binning.bin_examples(token_lens, n_bins)
