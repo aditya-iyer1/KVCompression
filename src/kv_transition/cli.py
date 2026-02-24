@@ -1553,8 +1553,8 @@ def cmd_all(config_path: Path, run_id: Optional[str] = None, allow_partial: bool
             conn.close()
         conn = None
     
+    conn = None
     try:
-        
         if not dataset_exists or not manifest_exists:
             print("Phase B: Preparing dataset...")
             prepare_exit_code = cmd_prepare(
@@ -1570,149 +1570,45 @@ def cmd_all(config_path: Path, run_id: Optional[str] = None, allow_partial: bool
         else:
             print("Phase B: Dataset already prepared, skipping")
         
-        # ===== Phase C: Run inference =====
-        print("Phase C: Running inference...")
-        run_exit_code = cmd_run(config_path, overrides=overrides)
-        if run_exit_code != 0:
-            print(f"Error: Run phase failed with exit code {run_exit_code}", file=sys.stderr)
-            return run_exit_code
-        
-        # Reopen DB for remaining phases
-        from .db import dao
-        conn = connect.connect(db_p)
-        schema.init_schema(conn)
-        
-        # Get run_ids to process (now that runs exist)
-        run_ids = _get_run_ids(conn, exp_group_id, run_id)
-        
-        # Get analysis seed from settings
-        seed = config.get("analysis", {}).get("seed", 1337)
-        drop_threshold = config.get("analysis", {}).get("drop_threshold", 0.15)
-        
-        # ===== Phase D: Score =====
-        print("Phase D: Scoring runs...")
-        from .eval.score import score_run
-        
-        for rid in run_ids:
-            try:
-                score_run(conn, rid)
-                print(f"  Scored run: {rid}")
-            except Exception as e:
-                print(f"Error scoring run {rid}: {e}", file=sys.stderr)
-                conn.close()
-                return 2
-        
-        # ===== Phase E: Analyze =====
-        print("Phase E: Analyzing runs...")
-        from .analysis import queries, aggregate, bootstrap, transition, plots
-        
-        runs_data = []  # For transition detection and plotting
-        
-        for rid in run_ids:
-            # Get run metadata
-            run_meta = queries.get_run_metadata(conn, rid)
-            if not run_meta:
-                print(f"Warning: Run {rid} metadata not found, skipping", file=sys.stderr)
-                continue
-            
-            kv_budget = _get_row_value(run_meta, "kv_budget")
-            
-            # Get dataset_id from first request
-            cursor = conn.execute("SELECT dataset_id FROM requests WHERE run_id = ? LIMIT 1", (rid,))
-            dataset_row = cursor.fetchone()
-            if not dataset_row:
-                print(f"Warning: No requests found for run {rid}, skipping", file=sys.stderr)
-                continue
-            
-            dataset_id = dataset_row[0]
-            
-            # Get bin-level rows
-            bin_rows = queries.get_bin_level_rows(conn, rid)
-            if not bin_rows:
-                print(f"Warning: No bin-level data for run {rid}, skipping", file=sys.stderr)
-                continue
-            
-            # Compute aggregates
-            bin_stats = aggregate.aggregate_run_bins(conn, rid)
-            
-            # Add bootstrap CIs
-            bin_stats = bootstrap.add_bootstrap_cis(bin_stats, bin_rows, seed=seed)
-            
-            # Get bin structure for token_min/token_max
-            bin_structure = queries.get_bin_structure(conn, dataset_id)
-            bin_edges = {_get_row_value(row, "bin_idx"): (_get_row_value(row, "token_min"), _get_row_value(row, "token_max")) for row in bin_structure}
-            
-            # Add token_min/token_max to bin_stats
-            for stat in bin_stats:
-                bin_idx = stat["bin_idx"]
-                if bin_idx in bin_edges:
-                    stat["token_min"] = bin_edges[bin_idx][0]
-                    stat["token_max"] = bin_edges[bin_idx][1]
-            
-            # Persist bin_stats
-            dao.upsert_bin_stats(conn, rid, dataset_id, bin_stats)
-            print(f"  Analyzed run: {rid} (budget={kv_budget})")
-            
-            # Collect data for transition detection and plotting
-            runs_data.append({
-                "run_id": rid,
-                "kv_budget": kv_budget,
-                "kv_policy": _get_row_value(run_meta, "kv_policy", ""),
-                "bins": bin_stats
-            })
-        
-        if not runs_data:
-            print("Error: No runs processed", file=sys.stderr)
-            conn.close()
-            return 2
-        
-        # Detect transition
-        transition_result = transition.detect_transition(runs_data, drop_threshold=drop_threshold)
-        
-        # Get kv_policy from first run
-        kv_policy = runs_data[0].get("kv_policy", "")
-        if not kv_policy:
-            first_run_meta = queries.get_run_metadata(conn, runs_data[0]["run_id"])
-            kv_policy = _get_row_value(first_run_meta, "kv_policy", "") if first_run_meta else ""
-        
-        # Persist transition summary
-        summary = {
-            "exp_group_id": exp_group_id,
-            "kv_policy": kv_policy,
-            "method": transition_result.get("method", "overall_mean_drop"),
-            "drop_threshold": drop_threshold,
-            "pre_budget": transition_result.get("pre_budget"),
-            "transition_budget": transition_result.get("transition_budget"),
-            "acc_pre": transition_result.get("acc_pre"),
-            "acc_post": transition_result.get("acc_post"),
-            "drop": transition_result.get("drop"),
-            "transition_bin_idx": transition_result.get("transition_bin_idx")
-        }
-        dao.upsert_transition_summary(conn, summary)
-        
-        # Generate plots
+        # ===== Phase C: Run inference (skip if runs already have requests) =====
+        run_already_done = False
         try:
-            plot_paths = plots.save_run_plots(config, runs_data)
-            print(f"  Plots saved:")
-            for path in plot_paths:
-                print(f"    {path}")
-        except ImportError as e:
-            print(f"Warning: Could not generate plots: {e}", file=sys.stderr)
-        except Exception as e:
-            print(f"Warning: Error generating plots: {e}", file=sys.stderr)
-        
-        # Print transition result
-        if transition_result.get("transition_budget") is not None:
-            print(f"  Transition detected at budget {transition_result['transition_budget']:.2f} "
-                  f"(drop: {transition_result.get('drop', 0):.3f})")
+            from .db import connect, schema
+            cconn = connect.connect(db_p)
+            schema.init_schema(cconn)
+            cur = cconn.execute(
+                "SELECT COUNT(*) FROM requests r JOIN runs ru ON r.run_id = ru.run_id WHERE ru.exp_group_id = ?",
+                (exp_group_id,),
+            )
+            row = cur.fetchone()
+            n_requests = row[0] if row else 0
+            cconn.close()
+            run_already_done = n_requests > 0
+        except Exception:
+            pass
+        if run_already_done:
+            print("Phase C: Runs already present, skipping")
         else:
-            print("  No transition detected")
+            print("Phase C: Running inference...")
+            run_exit_code = cmd_run(config_path, overrides=overrides)
+            if run_exit_code != 0:
+                print(f"Error: Run phase failed with exit code {run_exit_code}", file=sys.stderr)
+                return run_exit_code
         
-        # ===== Phase F: Report =====
+        # ===== Phases D→E→F: score → analyze → report (incremental; cache may skip stages) =====
+        print("All: score→analyze→report (incremental; cache may skip stages)")
+        
+        print("Phase D: Scoring runs...")
+        score_exit_code = cmd_score(config_path, run_id=run_id, overrides=overrides)
+        if score_exit_code != 0:
+            return score_exit_code
+        
+        print("Phase E: Analyzing runs...")
+        analyze_exit_code = cmd_analyze(config_path, run_id=run_id, overrides=overrides)
+        if analyze_exit_code != 0:
+            return analyze_exit_code
+        
         print("Phase F: Generating report...")
-        conn.close()
-        
-        # Call cmd_report with allow_partial flag (it will handle validation and generation)
         report_exit_code = cmd_report(config_path, allow_partial=allow_partial, overrides=overrides)
         if report_exit_code != 0:
             return report_exit_code
