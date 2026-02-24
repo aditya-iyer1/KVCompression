@@ -480,6 +480,110 @@ def _compute_analyze_inputs_hash(conn, exp_group_id: str, run_ids: List[str]) ->
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 
 
+def _compute_report_inputs_hash(conn, exp_group_id: str, allow_partial: bool) -> str:
+    """Compute deterministic hash of DB state that report depends on.
+
+    Uses bin_stats (per exp_group_id) and transition_summary presence/content.
+    allow_partial is mixed in so cache differs when allow_partial changes.
+    """
+    bin_stats_data: List[Dict[str, Any]] = []
+    if _table_exists(conn, "bin_stats") and _table_exists(conn, "runs"):
+        cur = conn.execute(
+            """
+            SELECT bs.run_id, bs.bin_idx, bs.acc_mean, bs.acc_std, bs.acc_ci_low, bs.acc_ci_high,
+                   bs.em_mean, bs.fail_rate, bs.lat_p50, bs.lat_p95, bs.tok_p50, bs.tok_p95
+            FROM bin_stats bs
+            JOIN runs r ON bs.run_id = r.run_id
+            WHERE r.exp_group_id = ?
+            ORDER BY bs.run_id, bs.bin_idx
+            """,
+            (exp_group_id,),
+        )
+        rows = cur.fetchall()
+        for row in rows:
+            try:
+                bin_stats_data.append(
+                    {
+                        "run_id": row["run_id"],
+                        "bin_idx": row["bin_idx"],
+                        "acc_mean": row["acc_mean"],
+                        "acc_std": row["acc_std"],
+                        "acc_ci_low": row["acc_ci_low"],
+                        "acc_ci_high": row["acc_ci_high"],
+                        "em_mean": row["em_mean"],
+                        "fail_rate": row["fail_rate"],
+                        "lat_p50": row["lat_p50"],
+                        "lat_p95": row["lat_p95"],
+                        "tok_p50": row["tok_p50"],
+                        "tok_p95": row["tok_p95"],
+                    }
+                )
+            except (TypeError, KeyError):
+                bin_stats_data.append(
+                    {
+                        "run_id": row[0],
+                        "bin_idx": row[1],
+                        "acc_mean": row[2],
+                        "acc_std": row[3],
+                        "acc_ci_low": row[4],
+                        "acc_ci_high": row[5],
+                        "em_mean": row[6],
+                        "fail_rate": row[7],
+                        "lat_p50": row[8],
+                        "lat_p95": row[9],
+                        "tok_p50": row[10],
+                        "tok_p95": row[11],
+                    }
+                )
+
+    ts_payload: Optional[Dict[str, Any]] = None
+    if _table_exists(conn, "transition_summary"):
+        cur = conn.execute(
+            """
+            SELECT kv_policy, method, drop_threshold, pre_budget, transition_budget,
+                   acc_pre, acc_post, "drop", transition_bin_idx
+            FROM transition_summary
+            WHERE exp_group_id = ?
+            """,
+            (exp_group_id,),
+        )
+        row = cur.fetchone()
+        if row is not None:
+            try:
+                ts_payload = {
+                    "kv_policy": row["kv_policy"],
+                    "method": row["method"],
+                    "drop_threshold": row["drop_threshold"],
+                    "pre_budget": row["pre_budget"],
+                    "transition_budget": row["transition_budget"],
+                    "acc_pre": row["acc_pre"],
+                    "acc_post": row["acc_post"],
+                    "drop": row["drop"],
+                    "transition_bin_idx": row["transition_bin_idx"],
+                }
+            except (TypeError, KeyError):
+                ts_payload = {
+                    "kv_policy": row[0],
+                    "method": row[1],
+                    "drop_threshold": row[2],
+                    "pre_budget": row[3],
+                    "transition_budget": row[4],
+                    "acc_pre": row[5],
+                    "acc_post": row[6],
+                    "drop": row[7],
+                    "transition_bin_idx": row[8],
+                }
+
+    payload = {
+        "allow_partial": bool(allow_partial),
+        "has_transition_summary": ts_payload is not None,
+        "bin_stats": bin_stats_data,
+        "transition_summary": ts_payload,
+    }
+    data = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(data.encode("utf-8")).hexdigest()[:24]
+
+
 def cmd_score(config_path: Path, run_id: Optional[str] = None, overrides: Optional[Dict[str, Any]] = None) -> int:
     """Score completed runs (Phase D).
     
@@ -841,6 +945,7 @@ def cmd_report(config_path: Path, allow_partial: bool = False, overrides: Option
     db_path_cfg = config.get("db", {}).get("path")
     db_p = paths.db_path(exp_group_id, db_path_cfg)
     run_d = paths.run_dir(exp_group_id)
+    report_path_fs = run_d / "report.md"
     
     # Validate prerequisites (uses report.build so 0-scored edge case can succeed)
     from .report.build import validate_report_prerequisites
@@ -870,7 +975,7 @@ def cmd_report(config_path: Path, allow_partial: bool = False, overrides: Option
     
     # Open DB and init schema
     try:
-        from .db import connect, schema
+        from .db import connect, schema, dao
         conn = connect.connect(db_p)
         schema.init_schema(conn)
     except Exception as e:
@@ -878,11 +983,29 @@ def cmd_report(config_path: Path, allow_partial: bool = False, overrides: Option
         return 2
     
     try:
+        # Cache check: skip if config+inputs match and report artifact exists
+        config_hash = stable_config_hash(config)
+        inputs_hash = _compute_report_inputs_hash(conn, exp_group_id, allow_partial)
+        cached = dao.get_stage_cache(conn, exp_group_id, "report")
+        if (
+            cached
+            and cached.get("config_hash") == config_hash
+            and cached.get("inputs_hash") == inputs_hash
+            and report_path_fs.exists()
+        ):
+            print("Report cache hit (config and inputs unchanged), skipping.")
+            conn.close()
+            return 0
+        
         # Generate report
         from .report.build import build_report
         
         report_path = build_report(conn, config)
         print(f"Report generated: {report_path}")
+        
+        # Upsert stage_cache on success
+        updated_at = datetime.now(timezone.utc).isoformat()
+        dao.upsert_stage_cache(conn, exp_group_id, "report", config_hash, inputs_hash, updated_at)
         
         conn.close()
         return 0
