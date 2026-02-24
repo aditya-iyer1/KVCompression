@@ -7,12 +7,16 @@ import hashlib
 import inspect
 import json
 import sqlite3
+import time
 from datetime import datetime
 from uuid import uuid4
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from ..db import dao
 from ..engines.base import BaseEngine
+
+# Global pacer: monotonic time of last request start (persists across budgets in same process)
+_last_request_monotonic: Optional[float] = None
 
 
 def _compute_dataset_id(dataset_name: str, task: str) -> str:
@@ -217,6 +221,26 @@ def run_one_setting(
             max_tokens=max_tokens,
             timeout_s=timeout_s,
         )
+        
+        # Global rate-limit pacing (engine.rate_limit.max_rpm)
+        global _last_request_monotonic
+        rate_limit = settings.get("engine", {}).get("rate_limit", {})
+        max_rpm = rate_limit.get("max_rpm")
+        if max_rpm is not None and max_rpm != 0:
+            try:
+                max_rpm_f = float(max_rpm)
+            except (TypeError, ValueError):
+                max_rpm_f = 0.0
+            if max_rpm_f > 0:
+                min_interval = 60.0 / max_rpm_f
+                now = time.monotonic()
+                if _last_request_monotonic is not None:
+                    elapsed = now - _last_request_monotonic
+                    if elapsed < min_interval:
+                        sleep_duration = min_interval - elapsed
+                        time.sleep(sleep_duration)
+                        print(f"  Rate limit: slept {sleep_duration:.2f}s (max_rpm={max_rpm_f:.0f})")
+                _last_request_monotonic = time.monotonic()
         
         # Call engine
         try:
