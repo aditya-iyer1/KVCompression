@@ -1047,6 +1047,12 @@ def _table_exists(conn, name: str) -> bool:
     return cur.fetchone() is not None
 
 
+def _delete_and_count(conn, table: str, sql: str, params: tuple) -> int:
+    """Execute DELETE and return cursor.rowcount."""
+    cur = conn.execute(sql, params)
+    return cur.rowcount
+
+
 def cmd_clean(
     config_path: Path,
     yes: bool = False,
@@ -1136,54 +1142,61 @@ def cmd_clean(
     counts["experiments"] = 0
     
     print(f"Target: exp_group_id={exp_group_id} (db={db_p})")
-    print("Would delete (dry-run):")
-    for table, n in counts.items():
-        print(f"  {table}: {n}")
-    
-    ds_placeholders = ",".join("?" * len(dataset_ids_used)) if dataset_ids_used else ""
-    requests_count = counts["requests"] if isinstance(counts["requests"], int) else 0
-    if purge_dataset and dataset_ids_used and _table_exists(conn, "requests"):
-        # After our deletes, any remaining request with these dataset_ids means "still referenced"
-        still_used = scalar(
-            f"SELECT COUNT(*) FROM requests WHERE dataset_id IN ({ds_placeholders})",
-            *dataset_ids_used
-        ) - requests_count
-        if still_used > 0:
-            print(f"  purge-dataset: would skip (dataset_ids still referenced by {still_used} other request(s))")
-        else:
-            for did in dataset_ids_used:
-                if _table_exists(conn, "manifest_entries"):
-                    counts[f"manifest_entries({did})"] = scalar("SELECT COUNT(*) FROM manifest_entries WHERE dataset_id = ?", did)
-                if _table_exists(conn, "examples"):
-                    counts[f"examples({did})"] = scalar("SELECT COUNT(*) FROM examples WHERE dataset_id = ?", did)
-                if _table_exists(conn, "bins"):
-                    counts[f"bins({did})"] = scalar("SELECT COUNT(*) FROM bins WHERE dataset_id = ?", did)
-            print("  purge-dataset: would also delete dataset cache for:", dataset_ids_used)
     
     if not yes:
+        print("Would delete (dry-run):")
+        for table, n in counts.items():
+            print(f"  {table}: {n}")
+        ds_placeholders = ",".join("?" * len(dataset_ids_used)) if dataset_ids_used else ""
+        requests_count = counts["requests"] if isinstance(counts["requests"], int) else 0
+        if purge_dataset and dataset_ids_used and _table_exists(conn, "requests"):
+            still_used = scalar(
+                f"SELECT COUNT(*) FROM requests WHERE dataset_id IN ({ds_placeholders})",
+                *dataset_ids_used
+            ) - requests_count
+            if still_used > 0:
+                print(f"  purge-dataset: would skip (dataset_ids still referenced by {still_used} other request(s))")
+            else:
+                for did in dataset_ids_used:
+                    if _table_exists(conn, "manifest_entries"):
+                        counts[f"manifest_entries({did})"] = scalar("SELECT COUNT(*) FROM manifest_entries WHERE dataset_id = ?", did)
+                    if _table_exists(conn, "examples"):
+                        counts[f"examples({did})"] = scalar("SELECT COUNT(*) FROM examples WHERE dataset_id = ?", did)
+                    if _table_exists(conn, "bins"):
+                        counts[f"bins({did})"] = scalar("SELECT COUNT(*) FROM bins WHERE dataset_id = ?", did)
+                print("  purge-dataset: would also delete dataset cache for:", dataset_ids_used)
         print("Run with --yes to execute deletions.")
         conn.close()
         return 0
     
-    # Execute deletions (FK-safe order); skip missing tables
+    # Execute deletions (FK-safe order: child tables first); skip missing tables; print row counts
+    ds_placeholders = ",".join("?" * len(dataset_ids_used)) if dataset_ids_used else ""
     with conn:
         if request_ids:
             if _table_exists(conn, "scores"):
-                conn.execute(f"DELETE FROM scores WHERE request_id IN ({request_placeholders})", request_ids)
+                n = _delete_and_count(conn, "scores", f"DELETE FROM scores WHERE request_id IN ({request_placeholders})", tuple(request_ids))
+                print(f"  deleted {n} from scores")
             if _table_exists(conn, "failures"):
-                conn.execute(f"DELETE FROM failures WHERE request_id IN ({request_placeholders})", request_ids)
+                n = _delete_and_count(conn, "failures", f"DELETE FROM failures WHERE request_id IN ({request_placeholders})", tuple(request_ids))
+                print(f"  deleted {n} from failures")
             if _table_exists(conn, "telemetry"):
-                conn.execute(f"DELETE FROM telemetry WHERE request_id IN ({request_placeholders})", request_ids)
+                n = _delete_and_count(conn, "telemetry", f"DELETE FROM telemetry WHERE request_id IN ({request_placeholders})", tuple(request_ids))
+                print(f"  deleted {n} from telemetry")
             if _table_exists(conn, "responses"):
-                conn.execute(f"DELETE FROM responses WHERE request_id IN ({request_placeholders})", request_ids)
+                n = _delete_and_count(conn, "responses", f"DELETE FROM responses WHERE request_id IN ({request_placeholders})", tuple(request_ids))
+                print(f"  deleted {n} from responses")
         if _table_exists(conn, "requests"):
-            conn.execute(f"DELETE FROM requests WHERE run_id IN ({placeholders})", run_ids)
+            n = _delete_and_count(conn, "requests", f"DELETE FROM requests WHERE run_id IN ({placeholders})", tuple(run_ids))
+            print(f"  deleted {n} from requests")
         if _table_exists(conn, "bin_stats"):
-            conn.execute(f"DELETE FROM bin_stats WHERE run_id IN ({placeholders})", run_ids)
-        conn.execute(f"DELETE FROM runs WHERE run_id IN ({placeholders})", run_ids)
+            n = _delete_and_count(conn, "bin_stats", f"DELETE FROM bin_stats WHERE run_id IN ({placeholders})", tuple(run_ids))
+            print(f"  deleted {n} from bin_stats")
         if _table_exists(conn, "transition_summary"):
-            conn.execute("DELETE FROM transition_summary WHERE exp_group_id = ?", (exp_group_id,))
-        # Keep experiments row so a subsequent run can insert new runs that reference it
+            n = _delete_and_count(conn, "transition_summary", "DELETE FROM transition_summary WHERE exp_group_id = ?", (exp_group_id,))
+            print(f"  deleted {n} from transition_summary")
+        n = _delete_and_count(conn, "runs", f"DELETE FROM runs WHERE run_id IN ({placeholders})", tuple(run_ids))
+        print(f"  deleted {n} from runs")
+    conn.commit()
     
     if purge_dataset and dataset_ids_used:
         # After run cleanup, any remaining request with these dataset_ids means do not purge
