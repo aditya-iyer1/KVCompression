@@ -283,7 +283,37 @@ def build_manifest(settings: Dict[str, Any], raw_examples: List[Dict[str, Any]])
     # Bin examples (used for bin_edges and bin_idx assignment)
     bin_idxs, bin_edges = binning.bin_examples(token_lens, n_bins)
     
-    n_candidates = len(normalized_examples)
+    # Optional prompt-length cap (dataset.max_prompt_tokens)
+    max_prompt_tokens = settings.get("dataset", {}).get("max_prompt_tokens")
+    if max_prompt_tokens is not None:
+        if not isinstance(max_prompt_tokens, int) or max_prompt_tokens <= 0:
+            raise ValueError(
+                f"settings.dataset.max_prompt_tokens must be a positive integer, "
+                f"got {max_prompt_tokens!r}"
+            )
+        filtered_examples: List[Dict[str, Any]] = []
+        filtered_token_lens: List[int] = []
+        filtered_bin_idxs: List[int] = []
+        removed = 0
+        for ex, tl, b in zip(normalized_examples, token_lens, bin_idxs):
+            if tl <= max_prompt_tokens:
+                filtered_examples.append(ex)
+                filtered_token_lens.append(tl)
+                filtered_bin_idxs.append(b)
+            else:
+                removed += 1
+        normalized_examples = filtered_examples
+        token_lens = filtered_token_lens
+        bin_idxs = filtered_bin_idxs
+        n_candidates = len(normalized_examples)
+        print(f"  max_prompt_tokens: {max_prompt_tokens} (filtered {removed} examples)")
+        if n_candidates == 0:
+            raise ValueError(
+                f"settings.dataset.max_prompt_tokens={max_prompt_tokens} filtered out all "
+                f"examples; no candidates remain for dataset '{dataset_id}'"
+            )
+    else:
+        n_candidates = len(normalized_examples)
     
     # Select examples: pinned indices, sanity slices, or per-bin selection
     if use_pinned:
