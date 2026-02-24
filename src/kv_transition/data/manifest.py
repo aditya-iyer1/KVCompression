@@ -3,6 +3,7 @@
 Creates the portable manifest.json artifact that defines the evaluation set.
 """
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -54,17 +55,24 @@ def _compute_token_length(example: Dict[str, Any], tokenizer_name: str) -> int:
     return tokenizer.count_tokens(prompt, tokenizer_name if tokenizer_name else None)
 
 
+def _seeded_order_key(seed: int, example_id: str) -> str:
+    """Deterministic sort key for (seed, example_id); same seed + id → same key."""
+    return hashlib.sha256(f"{seed}:{example_id}".encode()).hexdigest()
+
+
 def _select_examples_per_bin(
     examples: List[Dict[str, Any]],
     bin_idxs: List[int],
     token_lens: List[int],
     n_bins: int,
-    n_per_bin: int
+    n_per_bin: int,
+    seed: Optional[int] = None,
 ) -> List[int]:
     """Select up to n_per_bin examples per bin deterministically.
     
-    Selection is deterministic: within each bin, examples are sorted by
-    token length (then by example_id for stability), and first n_per_bin are selected.
+    When seed is set, within each bin examples are sorted by seeded key (seed + example_id)
+    then example_id, so selection varies with seed. When seed is None, sort by token length
+    then example_id (legacy behavior).
     
     Args:
         examples: List of normalized examples.
@@ -72,6 +80,7 @@ def _select_examples_per_bin(
         token_lens: Token length for each example (aligned with examples).
         n_bins: Number of bins.
         n_per_bin: Maximum examples to select per bin.
+        seed: Optional dataset seed for deterministic per-bin ordering; None = legacy (shortest first).
     
     Returns:
         List of selected example indices (into examples list).
@@ -82,21 +91,19 @@ def _select_examples_per_bin(
     for idx, bin_idx in enumerate(bin_idxs):
         bin_groups[bin_idx].append(idx)
     
-    # Select examples per bin
     selected_indices = []
-    
     for bin_idx in range(n_bins):
         bin_example_indices = bin_groups[bin_idx]
-        
         if not bin_example_indices:
             continue
-        
-        # Sort deterministically: by token length, then by example_id
-        bin_example_indices.sort(
-            key=lambda idx: (token_lens[idx], examples[idx]["example_id"])
-        )
-        
-        # Take first n_per_bin
+        if seed is not None:
+            bin_example_indices.sort(
+                key=lambda idx: (_seeded_order_key(seed, examples[idx]["example_id"]), examples[idx]["example_id"])
+            )
+        else:
+            bin_example_indices.sort(
+                key=lambda idx: (token_lens[idx], examples[idx]["example_id"])
+            )
         selected_indices.extend(bin_example_indices[:n_per_bin])
     
     return selected_indices
@@ -108,11 +115,12 @@ def _select_examples_per_bin_adaptive(
     token_lens: List[int],
     n_bins: int,
     n_per_bin_by_bin: List[int],
+    seed: Optional[int] = None,
 ) -> Tuple[List[int], List[int]]:
     """Select examples per bin with per-bin caps (deterministic).
     
-    Same stable sort as _select_examples_per_bin: within each bin sort by
-    (token_len ASC, example_id ASC), take first n_per_bin_by_bin[bin_idx].
+    When seed is set, within each bin sort by seeded key then example_id; when None,
+    sort by token_len then example_id. Take first n_per_bin_by_bin[bin_idx] per bin.
     
     Returns:
         (selected_indices, per_bin_n) where per_bin_n[i] is count selected from bin i.
@@ -132,9 +140,14 @@ def _select_examples_per_bin_adaptive(
         bin_example_indices = bin_groups[bin_idx]
         if not bin_example_indices:
             continue
-        bin_example_indices.sort(
-            key=lambda idx: (token_lens[idx], examples[idx]["example_id"])
-        )
+        if seed is not None:
+            bin_example_indices.sort(
+                key=lambda idx: (_seeded_order_key(seed, examples[idx]["example_id"]), examples[idx]["example_id"])
+            )
+        else:
+            bin_example_indices.sort(
+                key=lambda idx: (token_lens[idx], examples[idx]["example_id"])
+            )
         take = bin_example_indices[:cap]
         selected_indices.extend(take)
         per_bin_n[bin_idx] = len(take)
@@ -256,6 +269,13 @@ def build_manifest(settings: Dict[str, Any], raw_examples: List[Dict[str, Any]])
     n_bins = settings.get("binning", {}).get("n_bins")
     sanity_slices = settings.get("dataset", {}).get("sanity_slices")
     pinned_entry_indices = settings.get("dataset", {}).get("pinned_entry_indices")
+    dataset_seed_raw = settings.get("dataset", {}).get("seed")
+    dataset_seed: Optional[int] = None
+    if dataset_seed_raw is not None:
+        try:
+            dataset_seed = int(dataset_seed_raw)
+        except (TypeError, ValueError):
+            dataset_seed = 0
     
     if not dataset_name:
         raise ValueError("settings.dataset.name is required")
@@ -464,7 +484,7 @@ def build_manifest(settings: Dict[str, Any], raw_examples: List[Dict[str, Any]])
             strategy = "uniform"
         if strategy == "uniform":
             selected_indices = _select_examples_per_bin(
-                normalized_examples, bin_idxs, token_lens, n_bins, n_per_bin
+                normalized_examples, bin_idxs, token_lens, n_bins, n_per_bin, seed=dataset_seed
             )
             per_bin_n = None  # no per-bin breakdown for uniform
         elif strategy == "focus_transition":
@@ -503,7 +523,7 @@ def build_manifest(settings: Dict[str, Any], raw_examples: List[Dict[str, Any]])
                 for i in range(n_bins)
             ]
             selected_indices, per_bin_n = _select_examples_per_bin_adaptive(
-                normalized_examples, bin_idxs, token_lens, n_bins, n_per_bin_by_bin
+                normalized_examples, bin_idxs, token_lens, n_bins, n_per_bin_by_bin, seed=dataset_seed
             )
             n_per_bin = max(per_bin_n) if per_bin_n else 0  # for manifest compatibility
             print(
