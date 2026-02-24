@@ -1460,7 +1460,7 @@ Steps
 	•	Keep baseline runs small everywhere.
 	•	Increase n_per_bin only near suspected transition bins.
 	•	Make this an explicit mode (e.g., sampling.strategy = uniform | focus_transition) even if implemented later.
-3.	Caching & reuse (PARTIAL)
+3.	Caching & reuse (COMPLETE)
 	•	Ensure binning/token lengths are never recomputed if dataset_id + tokenizer match.
 	•	Ensure scoring is incremental (skip if score exists).
 	•	Ensure analyze is incremental (skip if bin_stats exists and matches seed/config hash).
