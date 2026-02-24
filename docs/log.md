@@ -1492,7 +1492,7 @@ Steps
 	•	analyze requires scores for all requests (or explicit partial mode) (DONE)
 	•	report requires bin_stats + plots (or degrade gracefully with warning) 
 	•	Ensure report clearly labels “partial run” if not complete. (DONE)
-3.	Failure taxonomy expansion guard
+3.	Failure taxonomy expansion guard (COMPLETE)
 	•	Confirm taxonomy is stable and doesn’t over-classify.
 	•	Add a “UNKNOWN_FAILURE” bucket instead of guessing.
 

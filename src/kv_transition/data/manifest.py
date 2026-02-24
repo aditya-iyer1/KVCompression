@@ -96,6 +96,100 @@ def _select_examples_per_bin(
     return selected_indices
 
 
+def _select_examples_sanity_slices(
+    examples: List[Dict[str, Any]],
+    token_lens: List[int],
+    sanity_slices: List[Dict[str, Any]],
+) -> List[int]:
+    """Select examples by sanity slice specs (deterministic).
+    
+    Each slice defines a window (by percentile or token bounds) and n examples
+    to take. Candidates are sorted by (token_len ASC, example_id ASC). Selection
+    is global over the entire pool.
+    
+    Args:
+        examples: List of normalized examples.
+        token_lens: Token length per example (aligned with examples).
+        sanity_slices: List of slice specs; each has "n", and either
+            ("min_pct", "max_pct") or ("min_tokens", "max_tokens"); optional "name".
+    
+    Returns:
+        List of selected example indices.
+    
+    Raises:
+        ValueError: If a slice cannot yield enough examples.
+    """
+    n_examples = len(examples)
+    if n_examples == 0:
+        return []
+    
+    # Sort all by (token_len, example_id) for deterministic selection
+    sorted_indices = sorted(
+        range(n_examples),
+        key=lambda idx: (token_lens[idx], examples[idx]["example_id"])
+    )
+    sorted_tokens = sorted(token_lens)
+    
+    def percentile_token(pct: float) -> int:
+        """Token value at given percentile (0..100)."""
+        if pct <= 0:
+            return sorted_tokens[0]
+        if pct >= 100:
+            return sorted_tokens[-1]
+        idx = min(n_examples - 1, int((n_examples - 1) * pct / 100))
+        return sorted_tokens[idx]
+    
+    selected: List[int] = []
+    selected_set = set()
+    slice_counts: List[int] = []
+    
+    for i, spec in enumerate(sanity_slices):
+        n = spec.get("n")
+        if n is None or not isinstance(n, int) or n < 1:
+            raise ValueError(f"sanity_slices[{i}]: 'n' must be a positive integer")
+        
+        has_pct = "min_pct" in spec or "max_pct" in spec
+        has_tokens = "min_tokens" in spec or "max_tokens" in spec
+        if has_pct and has_tokens:
+            raise ValueError(f"sanity_slices[{i}]: use either (min_pct, max_pct) or (min_tokens, max_tokens), not both")
+        if not has_pct and not has_tokens:
+            raise ValueError(f"sanity_slices[{i}]: specify either (min_pct, max_pct) or (min_tokens, max_tokens)")
+        
+        if has_pct:
+            min_pct = spec.get("min_pct", 0)
+            max_pct = spec.get("max_pct", 100)
+            min_tok = percentile_token(float(min_pct))
+            max_tok = percentile_token(float(max_pct))
+        else:
+            min_tok = spec.get("min_tokens", 0)
+            max_tok = spec.get("max_tokens", sorted_tokens[-1] if sorted_tokens else 0)
+        
+        name = spec.get("name", f"slice_{i}")
+        count = 0
+        for idx in sorted_indices:
+            if idx in selected_set:
+                continue
+            tl = token_lens[idx]
+            if min_tok <= tl <= max_tok:
+                selected.append(idx)
+                selected_set.add(idx)
+                count += 1
+                if count >= n:
+                    break
+        if count < n:
+            raise ValueError(
+                f"sanity_slices[{i}] ({name}): requested n={n}, only {count} examples in token range [{min_tok}, {max_tok}]"
+            )
+        slice_counts.append(count)
+    
+    total = len(selected)
+    # Debug: concise print when sanity_slices is used
+    parts = [f"{spec.get('name', f'slice_{i}')}={c}" for i, (spec, c) in enumerate(zip(sanity_slices, slice_counts))]
+    print(f"  sanity_slices: {' '.join(parts)} total={total}")
+    
+    return selected
+
+
 def build_manifest(settings: Dict[str, Any], raw_examples: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Build manifest from settings and raw examples.
     
@@ -114,15 +208,17 @@ def build_manifest(settings: Dict[str, Any], raw_examples: List[Dict[str, Any]])
     task = settings.get("dataset", {}).get("task")
     n_per_bin = settings.get("dataset", {}).get("n_per_bin")
     n_bins = settings.get("binning", {}).get("n_bins")
+    sanity_slices = settings.get("dataset", {}).get("sanity_slices")
     
     if not dataset_name:
         raise ValueError("settings.dataset.name is required")
     if not task:
         raise ValueError("settings.dataset.task is required")
-    if n_per_bin is None or n_per_bin < 1:
-        raise ValueError("settings.dataset.n_per_bin must be >= 1")
     if n_bins is None or n_bins < 1:
         raise ValueError("settings.binning.n_bins must be >= 1")
+    use_sanity_slices = isinstance(sanity_slices, list) and len(sanity_slices) > 0
+    if not use_sanity_slices and (n_per_bin is None or n_per_bin < 1):
+        raise ValueError("settings.dataset.n_per_bin must be >= 1 when sanity_slices is not set")
     
     # Compute dataset_id
     dataset_id = _compute_dataset_id(dataset_name, task)
@@ -139,13 +235,19 @@ def build_manifest(settings: Dict[str, Any], raw_examples: List[Dict[str, Any]])
         for ex in normalized_examples
     ]
     
-    # Bin examples
+    # Bin examples (used for bin_edges and bin_idx assignment)
     bin_idxs, bin_edges = binning.bin_examples(token_lens, n_bins)
     
-    # Select examples per bin
-    selected_indices = _select_examples_per_bin(
-        normalized_examples, bin_idxs, token_lens, n_bins, n_per_bin
-    )
+    # Select examples: by sanity slices or by per-bin selection
+    if use_sanity_slices:
+        selected_indices = _select_examples_sanity_slices(
+            normalized_examples, token_lens, sanity_slices
+        )
+        n_per_bin = len(selected_indices)  # for manifest metadata
+    else:
+        selected_indices = _select_examples_per_bin(
+            normalized_examples, bin_idxs, token_lens, n_bins, n_per_bin
+        )
     
     # Build bin_edges structure
     bin_edges_list = [
