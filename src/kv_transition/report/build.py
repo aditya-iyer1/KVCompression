@@ -6,7 +6,7 @@ Generates markdown reports by rendering Jinja templates with data from the datab
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 try:
     from jinja2 import Environment, FileSystemLoader, TemplateNotFound
@@ -30,6 +30,88 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
         WHERE type='table' AND name=?
     """, (table_name,))
     return cursor.fetchone() is not None
+
+
+def get_scored_count(conn: sqlite3.Connection, exp_group_id: str) -> int:
+    """Return number of scored requests (scores joined to runs) for this exp_group_id."""
+    if not _table_exists(conn, "scores") or not _table_exists(conn, "runs"):
+        return 0
+    try:
+        cursor = conn.execute("""
+            SELECT COUNT(*) FROM scores s
+            JOIN requests r ON r.request_id = s.request_id
+            JOIN runs ru ON r.run_id = ru.run_id
+            WHERE ru.exp_group_id = ?
+        """, (exp_group_id,))
+        row = cursor.fetchone()
+        return row[0] if row else 0
+    except sqlite3.OperationalError:
+        return 0
+
+
+def validate_report_prerequisites(
+    db_path: Path,
+    run_dir: Path,
+    exp_group_id: str,
+    allow_partial: bool = False,
+) -> Tuple[bool, List[str]]:
+    """Validate prerequisites for report generation.
+    
+    When the run group has 0 scored rows, acc_by_bin and latency_p50_by_bin are not required;
+    report can succeed and will show a no-scorable-responses note.
+    When scored_count > 0, all expected plots are required unless allow_partial is True.
+    
+    Returns:
+        (is_valid, list_of_missing_items).
+    """
+    missing: List[str] = []
+    if not db_path.exists():
+        missing.append(f"Database file missing: {db_path}")
+        return (allow_partial, missing) if allow_partial else (False, missing)
+    scored_count = 0
+    conn = None
+    try:
+        from ..db import connect, schema
+        conn = connect.connect(db_path)
+        schema.init_schema(conn)
+        scored_count = get_scored_count(conn, exp_group_id)
+        cursor = conn.execute("""
+            SELECT name FROM sqlite_master 
+            WHERE type='table' AND name='bin_stats'
+        """)
+        if cursor.fetchone() is None:
+            missing.append("Database table 'bin_stats' missing (run 'analyze' command first)")
+        else:
+            cursor = conn.execute("""
+                SELECT COUNT(*) FROM bin_stats bs
+                JOIN runs r ON bs.run_id = r.run_id
+                WHERE r.exp_group_id = ?
+            """, (exp_group_id,))
+            row = cursor.fetchone()
+            count = row[0] if row else 0
+            if count == 0:
+                missing.append(f"No bin_stats data found for exp_group_id '{exp_group_id}' (run 'analyze' command first)")
+    except Exception as e:
+        missing.append(f"Error checking database: {e}")
+    finally:
+        if conn is not None:
+            conn.close()
+    plots_dir = run_dir / "plots"
+    if not plots_dir.exists():
+        missing.append(f"Plots directory missing: {plots_dir}")
+    else:
+        if scored_count == 0:
+            # Edge case: no scorable responses; do not require any plot files
+            required_plots = []
+        else:
+            required_plots = ["acc_by_bin.png", "fail_by_bin.png", "latency_p50_by_bin.png"]
+        for plot_file in required_plots:
+            plot_path = plots_dir / plot_file
+            if not plot_path.exists():
+                missing.append(f"Plot file missing: {plot_path}")
+    if not allow_partial and missing:
+        return (False, missing)
+    return (True, missing)
 
 
 def _compute_integrity_summary(conn: sqlite3.Connection, exp_group_id: str) -> str:
@@ -305,14 +387,16 @@ def build_report(conn: sqlite3.Connection, settings: Dict) -> Path:
                 # Store relative path from report location
                 plots[plot_name] = f"plots/{plot_name}"
     
-    # Build context
+    scored_count = get_scored_count(conn, exp_group_id)
+    no_scorable_responses = scored_count == 0
     context = {
         "exp_group_id": exp_group_id,
         "experiment": experiment,
         "runs": runs,
         "transition": transition,
         "plots": plots,
-        "generated_at": datetime.utcnow().isoformat()
+        "generated_at": datetime.utcnow().isoformat(),
+        "no_scorable_responses": no_scorable_responses,
     }
     
     # Render template

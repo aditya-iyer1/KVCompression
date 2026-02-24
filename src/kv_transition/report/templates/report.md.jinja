@@ -76,6 +76,10 @@ Use the **accuracy**, **failure rate**, and **latency** plots below to diagnose:
 
 ---
 
+{% if no_scorable_responses %}
+**Note:** No scorable responses were produced for this run group; accuracy and latency plots are omitted. See Integrity Summary and failure-rate plot (if present) for failure breakdown.
+{% endif %}
+
 {% if plots %}
 ## Plots
 

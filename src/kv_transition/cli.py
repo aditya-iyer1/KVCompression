@@ -784,8 +784,9 @@ def cmd_report(config_path: Path, allow_partial: bool = False, overrides: Option
     db_p = paths.db_path(exp_group_id, db_path_cfg)
     run_d = paths.run_dir(exp_group_id)
     
-    # Validate prerequisites
-    is_valid, missing = _validate_report_prerequisites(exp_group_id, db_p, run_d, allow_partial=allow_partial)
+    # Validate prerequisites (uses report.build so 0-scored edge case can succeed)
+    from .report.build import validate_report_prerequisites
+    is_valid, missing = validate_report_prerequisites(db_p, run_d, exp_group_id, allow_partial=allow_partial)
     
     if not is_valid:
         print("Error: Missing required prerequisites for report generation:", file=sys.stderr)
