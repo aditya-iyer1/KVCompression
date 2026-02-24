@@ -108,6 +108,27 @@ def run_one_setting(
             f"To rerun, use a new exp_group_id or delete existing rows for this run_id."
         )
     
+    # Optional RPM pacing: run.pacing.requests_per_minute or engine.rate_limit.max_rpm (backward compat)
+    pacing_rpm: Optional[int] = None
+    run_pacing = settings.get("run", {}).get("pacing", {})
+    rpm_candidate = run_pacing.get("requests_per_minute")
+    if rpm_candidate is not None and isinstance(rpm_candidate, int) and rpm_candidate > 0:
+        pacing_rpm = rpm_candidate
+    else:
+        max_rpm = settings.get("engine", {}).get("rate_limit", {}).get("max_rpm")
+        if max_rpm is not None:
+            try:
+                v = int(max_rpm)
+                if v > 0:
+                    pacing_rpm = v
+            except (TypeError, ValueError):
+                pass
+    if pacing_rpm is not None:
+        pacing_interval = 60.0 / pacing_rpm
+        print(f"  Pacing enabled: {pacing_rpm} RPM ({pacing_interval:.2f}s interval)")
+    else:
+        pacing_interval = None
+    
     # Compute prompt template version hash
     prompt_template_version = _compute_prompt_template_version()
     
@@ -223,25 +244,15 @@ def run_one_setting(
             timeout_s=timeout_s,
         )
         
-        # Global rate-limit pacing (engine.rate_limit.max_rpm)
+        # Optional RPM pacing: sleep if needed so interval between request starts >= pacing_interval
         global _last_request_monotonic
-        rate_limit = settings.get("engine", {}).get("rate_limit", {})
-        max_rpm = rate_limit.get("max_rpm")
-        if max_rpm is not None and max_rpm != 0:
-            try:
-                max_rpm_f = float(max_rpm)
-            except (TypeError, ValueError):
-                max_rpm_f = 0.0
-            if max_rpm_f > 0:
-                min_interval = 60.0 / max_rpm_f
-                now = time.monotonic()
-                if _last_request_monotonic is not None:
-                    elapsed = now - _last_request_monotonic
-                    if elapsed < min_interval:
-                        sleep_duration = min_interval - elapsed
-                        time.sleep(sleep_duration)
-                        print(f"  Rate limit: slept {sleep_duration:.2f}s (max_rpm={max_rpm_f:.0f})")
-                _last_request_monotonic = time.monotonic()
+        if pacing_interval is not None:
+            now = time.monotonic()
+            if _last_request_monotonic is not None:
+                elapsed = now - _last_request_monotonic
+                if elapsed < pacing_interval:
+                    time.sleep(pacing_interval - elapsed)
+            _last_request_monotonic = time.monotonic()
         
         # Call engine
         try:
