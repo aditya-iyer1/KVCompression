@@ -24,7 +24,7 @@
 **Goal:** Ensure the server is actually receiving/applying the KV budget parameter; otherwise you can’t expect degradation.
 
 ### Steps
-0.1 **Echo-proof check via raw response** 
+0.1 **Echo-proof check via raw response** (COMPLETE)
 - Run 2 requests (same prompt) with budget=1.0 and 0.2 against each engine.
 - Inspect stored `requests.prompt_json` + `runs.kv_budget` and confirm the KV budget parameter is present in the request payload for *both* budgets.
 - **Check:** For each engine, DB contains two requests with *different* KV budget values passed in payload (not just logged locally).
