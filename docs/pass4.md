@@ -24,7 +24,7 @@
 **Goal:** Ensure the server is actually receiving/applying the KV budget parameter; otherwise you can’t expect degradation.
 
 ### Steps
-0.1 **Echo-proof check via raw response**
+0.1 **Echo-proof check via raw response** 
 - Run 2 requests (same prompt) with budget=1.0 and 0.2 against each engine.
 - Inspect stored `requests.prompt_json` + `runs.kv_budget` and confirm the KV budget parameter is present in the request payload for *both* budgets.
 - **Check:** For each engine, DB contains two requests with *different* KV budget values passed in payload (not just logged locally).
@@ -41,7 +41,7 @@
 **Goal:** Choose bins/tasks/settings that *should* show degradation if KV compression works.
 
 ### Steps
-1.1 **Pin two tasks, 4 bins, deterministic sampling**
+1.1 **Pin two tasks, 4 bins, deterministic sampling** (COMPLETE)
 - Use your two tasks: **TREC** and **NarrativeQA**.
 - Set `n_bins = 4`, `n_per_bin = 8` (enough for stable bin means without blowing cost).
 - `temperature=0`, keep `max_tokens` fixed across runs.
