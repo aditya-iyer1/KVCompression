@@ -1,0 +1,41 @@
+# Pass 4 pinned experiment: LongBench TREC, 4 length bins, KV budgets [1.0, 0.2].
+# 32 requests per budget (4 bins × 8). Deterministic sampling (temperature=0, seed).
+#
+# Usage (uv):
+#   uv run python -m kv_transition all -c config/experiments/pass4_trec_4bins.yaml
+
+dataset:
+  name: longbench
+  task: trec
+  seed: 1337
+  n_per_bin: 8
+
+binning:
+  n_bins: 4
+
+model:
+  name: ${MODEL_NAME}
+
+engine:
+  name: openai_compat
+  base_url: ${BASE_URL}
+  api_key_env: OPENAI_API_KEY
+  request:
+    timeout_s: 120
+
+kv:
+  policy: snapkv
+  budgets: [1.0, 0.2]
+
+decoding:
+  temperature: 0
+  max_tokens: 128
+
+analysis:
+  seed: 1337
+
+output:
+  exp_group_id: pass4_longbench_trec_4bins_v1
+
+db:
+  path: auto
