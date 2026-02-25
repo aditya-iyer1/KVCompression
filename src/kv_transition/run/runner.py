@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 from uuid import uuid4
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 from ..db import dao
 from ..engines.base import BaseEngine
@@ -53,11 +54,11 @@ def _compute_prompt_template_version() -> str:
 
 def _build_messages(context: str, question: str) -> list[Dict[str, str]]:
     """Build OpenAI-style messages for inference.
-    
+
     Args:
         context: Context text.
         question: Question text.
-    
+
     Returns:
         List of message dicts in OpenAI format.
     """
@@ -71,6 +72,34 @@ def _build_messages(context: str, question: str) -> list[Dict[str, str]]:
             "content": f"Context:\n{context}\n\nQuestion:\n{question}"
         }
     ]
+
+
+def _is_openai_base_url(base_url: str) -> bool:
+    """True if base_url hostname is api.openai.com (OpenAI API)."""
+    if not base_url:
+        return False
+    parsed = urlparse(base_url)
+    host = (parsed.netloc or "").split(":")[0].lower()
+    return host == "api.openai.com"
+
+
+def _kv_marker_message(kv_policy: str, kv_budget: float) -> Dict[str, str]:
+    """Build deterministic system message encoding KV policy and budget (for non-OpenAI)."""
+    content = f"KV_POLICY={kv_policy};KV_BUDGET={kv_budget}"
+    return {"role": "system", "content": content}
+
+
+def _resolve_extra_body(extra_body: Any, kv_budget: float) -> Dict[str, Any]:
+    """Resolve engine.request.extra_body dict; replace string '{kv_budget}' with float kv_budget."""
+    if not isinstance(extra_body, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for k, v in extra_body.items():
+        if v == "{kv_budget}":
+            out[k] = kv_budget
+        else:
+            out[k] = v
+    return out
 
 
 def _is_rate_limit_error(exc: BaseException) -> bool:
@@ -272,6 +301,12 @@ def run_one_setting(
     if debug:
         print(f"  Debug: run_id={run_id}, kv_budget={kv_budget}, model={model_name}, base_url={base_url}")
     
+    is_openai = _is_openai_base_url(base_url)
+    extra_kwargs: Dict[str, Any] = {}
+    if not is_openai:
+        extra_body = settings.get("engine", {}).get("request", {}).get("extra_body")
+        extra_kwargs = _resolve_extra_body(extra_body, kv_budget)
+    
     # Identify dataset_id
     dataset_name = settings["dataset"]["name"]
     task = settings["dataset"]["task"]
@@ -346,6 +381,10 @@ def run_one_setting(
         context = example["context"]
         question = example["question"]
         messages = _build_messages(context, question)
+        if not is_openai:
+            messages_to_send = [_kv_marker_message(kv_policy, kv_budget)] + messages
+        else:
+            messages_to_send = messages
         
         # Generate stable unique IDs
         request_id = str(uuid4())
@@ -358,7 +397,7 @@ def run_one_setting(
             dataset_id=dataset_id,
             entry_idx=entry_idx,
             example_id=example_id,
-            messages=messages,
+            messages=messages_to_send,
             temperature=temperature,
             max_tokens=max_tokens,
             timeout_s=timeout_s,
@@ -403,11 +442,12 @@ def run_one_setting(
         for attempt in range(1, retry_max_attempts + 1):
             try:
                 result = engine.generate(
-                    messages=messages,
+                    messages=messages_to_send,
                     model=model_name,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     timeout_s=timeout_s,
+                    **extra_kwargs,
                 )
                 break
             except Exception as e:
