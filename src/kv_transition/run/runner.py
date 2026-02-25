@@ -355,7 +355,8 @@ def run_one_setting(
         model_max_len_int = 8192
     # Runtime prompt cap: model_max_len - max_new_tokens - safety buffer
     runtime_prompt_cap: Optional[int] = None
-    cap_candidate = model_max_len_int - gen_max_tokens_int - 256
+    buffer = 256 if is_openai else 2048
+    cap_candidate = model_max_len_int - gen_max_tokens_int - buffer
     if cap_candidate > 0:
         runtime_prompt_cap = cap_candidate
     
