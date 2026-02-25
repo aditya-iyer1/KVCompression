@@ -402,6 +402,61 @@ def build_manifest(settings: Dict[str, Any], raw_examples: List[Dict[str, Any]])
         else:
             token_lens.append(_compute_token_length(ex, tokenizer_name))
     
+    # Optional binning-wide token length cap (binning.max_token_len) applied
+    # before computing bin edges and sampling. This is especially useful for
+    # vLLM runs where very long contexts can overflow the server context window.
+    max_token_len = settings.get("binning", {}).get("max_token_len")
+    if max_token_len is not None:
+        max_token_len_raw = max_token_len
+        try:
+            max_token_len = int(max_token_len_raw)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"settings.binning.max_token_len must be a positive integer, "
+                f"got {max_token_len_raw!r}"
+            )
+        if max_token_len <= 0:
+            raise ValueError(
+                f"settings.binning.max_token_len must be a positive integer, "
+                f"got {max_token_len_raw!r}"
+            )
+        filtered_examples: List[Dict[str, Any]] = []
+        filtered_token_lens: List[int] = []
+        removed = 0
+        for ex, tl in zip(normalized_examples, token_lens):
+            if tl <= max_token_len:
+                filtered_examples.append(ex)
+                filtered_token_lens.append(tl)
+            else:
+                removed += 1
+        normalized_examples = filtered_examples
+        token_lens = filtered_token_lens
+        n_candidates = len(normalized_examples)
+        print(f"  binning.max_token_len: {max_token_len} (filtered {removed} examples)")
+        if n_candidates == 0:
+            raise ValueError(
+                f"settings.binning.max_token_len={max_token_len} filtered out all "
+                f"examples; no candidates remain for dataset '{dataset_id}'"
+            )
+        # For uniform per-bin sampling (no pins/sanity slices), ensure there are
+        # enough remaining examples to fill all bins.
+        if (
+            not use_pinned
+            and not use_sanity_slices
+            and sampling_strategy == "uniform"
+            and n_per_bin is not None
+            and n_per_bin > 0
+        ):
+            required = n_bins * n_per_bin
+            if n_candidates < required:
+                raise ValueError(
+                    f"settings.binning.max_token_len={max_token_len} leaves only "
+                    f"{n_candidates} examples, but n_bins={n_bins} and "
+                    f"n_per_bin={n_per_bin} require at least {required} examples"
+                )
+    else:
+        n_candidates = len(normalized_examples)
+    
     # Bin examples (used for bin_edges and bin_idx assignment)
     bin_idxs, bin_edges = binning.bin_examples(token_lens, n_bins)
     
@@ -443,6 +498,8 @@ def build_manifest(settings: Dict[str, Any], raw_examples: List[Dict[str, Any]])
                 f"examples; no candidates remain for dataset '{dataset_id}'"
             )
     else:
+        # If max_prompt_tokens is not set, keep the current n_candidates value
+        # (which already accounts for any binning.max_token_len filtering).
         n_candidates = len(normalized_examples)
     
     # Select examples: pinned indices, sanity slices, or per-bin selection
