@@ -24,6 +24,9 @@ engine:
   api_key_env: OPENAI_API_KEY
   request:
     timeout_s: 120
+    extra_body:
+      kv_budget: "{kv_budget}"
+      kv_policy: "{kv.policy}"
 
 kv:
   policy: snapkv

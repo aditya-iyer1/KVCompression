@@ -303,8 +303,11 @@ def run_one_setting(
         print(f"  Debug: run_id={run_id}, kv_budget={kv_budget}, model={model_name}, base_url={base_url}")
     
     is_openai = _is_openai_base_url(base_url)
+    # Allow extra_body forwarding for non-OpenAI openai_compat endpoints and for
+    # non-openai_compat engines. Never forward extra_body to the real OpenAI API.
+    allow_extra_body = (engine_name == "openai_compat" and not is_openai) or (engine_name != "openai_compat")
     extra_kwargs: Dict[str, Any] = {}
-    if not is_openai:
+    if allow_extra_body:
         extra_body = settings.get("engine", {}).get("request", {}).get("extra_body")
         extra_kwargs = _resolve_extra_body(extra_body, kv_budget)
     
