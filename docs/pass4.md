@@ -59,17 +59,17 @@
 **Goal:** Show the phenomenon exists at least once in a stable environment before moving to GPU/vLLM.
 
 ### Steps
-2.1 **Run full pipeline for each task**
+2.1 **Run full pipeline for each task** (COMPLETE)
 For each config (TREC, NarrativeQA):
 - `prepare → run → score → analyze → report`
 - **Check:** `bin_stats` exists for both budgets and all 4 bins (8 rows per task: 2 budgets × 4 bins).
 
-2.2 **Primary success metric: per-bin F1 drop**
+2.2 **Primary success metric: per-bin F1 drop** (COMPLETE)
 Compute per bin:  
 `ΔF1(bin) = F1_mean(budget=0.2, bin) - F1_mean(budget=1.0, bin)`
 - **Check:** For each task, at least **2 of 4 bins** have `ΔF1 ≤ -0.10` (absolute 10-point drop).
 
-2.3 **Failure inflation attribution (≤5% of drop)**
+2.3 **Failure inflation attribution (≤5% of drop)** (COMPLEte)
 For bins where the F1 drop is large, estimate how much of the drop could be “explained” by failures:
 - Let `fail_rate` be fraction of requests in failures for that (budget, bin).
 - Conservative bound: assume every failure would have been perfect (F1=1) under 0.2 (best case counterfactual).
@@ -152,3 +152,11 @@ Personal notes/observations for pass 5
 4. Are our arguments actually getting passed? Part of (1), Realized that the snapkv etc arguments arent correctly ordered, need to ensure all that is correct.
 5. Maybe provide original contextcliff documents, see if any of the values in there would meaningfully and easily improve the current setup?
 6. Ask about reset scope in 291 context?
+
+
+
+
+
+
+•	“For real OpenAI API runs, we will not send extra_body KV params; Step 0.1 will be satisfied by (a) distinct runs.kv_budget values and (b) documented limitation that OpenAI won’t accept/echo KV params.”
+•	“Step 0.1 strict ‘payload contains kv_budget’ will be enforced on GPU vLLM openai_compat runs only.”
