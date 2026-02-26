@@ -87,12 +87,12 @@ For bins where the F1 drop is large, estimate how much of the drop could be “e
 **Goal:** Same detection on the GPU serving stack; directionality must match OpenAI.
 
 ### Steps
-3.1 **[GPU] One-time server readiness**
+3.1 **[GPU] One-time server readiness** (COMPLETE)
 - Start vLLM OpenAI-compatible server with the same model family you used for tokenization/binning assumptions.
 - Confirm a single “ping” completion works.
 - **Check:** One successful completion stored in DB with expected `model_name`, non-empty output.
 
-3.2 **[GPU] Run the same two configs**
+3.2 **[GPU] Run the same two configs** (COMPLETE)
 For each task (TREC, NarrativeQA):
 - `prepare` can be skipped if manifest/DB already exist and are identical; otherwise run it.
 - `run → score → analyze → report`
@@ -138,3 +138,15 @@ Pass 4 is complete when all are true:
 - [ ] [GPU] vLLM: failure attribution bound holds (Step 3.4)
 
 **Pass 4 deliverable:** A short “Pass4 Verdict” note containing the bin tables (ΔF1, fail_rate, corrected ΔF1) for both engines and both tasks, and a clear PASS/FAIL against the checklist above.
+
+
+
+--- 
+
+
+Personal notes/observations for pass 5
+
+1. Are we actually genuinely using the kv compression correctly?
+2. Effiency. Preparing the dataset step takes an extremely long time.
+3. CLI always return "no transition detected" - must be something deeper there
+4. Are our arguments actually getting passed? Part of (1), Realized that the snapkv etc arguments arent correctly ordered, need to ensure all that is correct.
