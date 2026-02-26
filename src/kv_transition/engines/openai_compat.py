@@ -12,6 +12,23 @@ from urllib.request import Request, urlopen
 from .base import BaseEngine, EngineResult
 
 
+def _truncate_for_notes(value: Any, max_len: int = 1024) -> Any:
+    """Recursively truncate large string fields for telemetry notes.
+    
+    Keeps structure identical to the original payload but shortens long
+    string values (e.g., message content) to avoid huge rows in SQLite.
+    """
+    if isinstance(value, str):
+        if len(value) <= max_len:
+            return value
+        return value[:max_len] + "...[truncated]"
+    if isinstance(value, list):
+        return [_truncate_for_notes(v, max_len) for v in value]
+    if isinstance(value, dict):
+        return {k: _truncate_for_notes(v, max_len) for k, v in value.items()}
+    return value
+
+
 def _normalize_base_url(base_url: str) -> str:
     """Normalize base_url to ensure it ends with /v1 if needed.
     
@@ -152,6 +169,12 @@ class OpenAICompatEngine(BaseEngine):
             "max_tokens": max_tokens,
             **kwargs
         }
+        # Capture a truncated copy of the outbound payload for telemetry notes.
+        # This does not affect the actual request body that is sent.
+        kv_budget = kwargs.get("kv_budget")
+        outbound_for_notes = _truncate_for_notes(body)
+        if kv_budget is not None and "kv_budget" not in outbound_for_notes:
+            outbound_for_notes["kv_budget"] = kv_budget
         
         # Build headers
         headers = {
@@ -186,7 +209,9 @@ class OpenAICompatEngine(BaseEngine):
             usage = response_data.get("usage")
             
             timings = {
-                "latency_s": latency_s
+                "latency_s": latency_s,
+                # Outbound /v1/chat/completions payload snapshot (truncated strings)
+                "outbound_request": outbound_for_notes,
             }
             
             return EngineResult(
