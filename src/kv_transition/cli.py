@@ -317,7 +317,7 @@ def cmd_run(config_path: Path, overrides: Optional[Dict[str, Any]] = None) -> in
     
     # 3) Open DB and init schema
     try:
-        from .db import connect, schema
+        from .db import connect, schema, dao
         conn = connect.connect(db_p)
         schema.init_schema(conn)
     except Exception as e:
@@ -336,25 +336,40 @@ def cmd_run(config_path: Path, overrides: Optional[Dict[str, Any]] = None) -> in
         
         dataset_id = f"{dataset_name}__{task}"
         
-        # Check that dataset exists
+        # 4a) Prefer stage_cache if it indicates Phase B completed for this exp_group_id
+        prepared_ok = False
+        try:
+            cached_prepare = dao.get_stage_cache(conn, exp_group_id, "prepare")
+        except Exception:
+            cached_prepare = None
+        
+        # 4b) Fallback: treat as prepared if manifest data exists for this dataset_id
+        # (datasets row exists, and both bins and manifest_entries have data).
+        dataset_exists = False
+        manifest_rows = 0
+        bin_rows = 0
         cursor = conn.execute(
             "SELECT 1 FROM datasets WHERE dataset_id = ?",
             (dataset_id,)
         )
-        if cursor.fetchone() is None:
-            print(
-                "No prepared manifest found; run `kv-transition prepare` first.",
-                file=sys.stderr
+        if cursor.fetchone() is not None:
+            dataset_exists = True
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM manifest_entries WHERE dataset_id = ?",
+                (dataset_id,)
             )
-            conn.close()
-            return 2
+            row = cursor.fetchone()
+            manifest_rows = row[0] if row else 0
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM bins WHERE dataset_id = ?",
+                (dataset_id,)
+            )
+            row = cursor.fetchone()
+            bin_rows = row[0] if row else 0
         
-        # Check that manifest_entries exist for this dataset
-        cursor = conn.execute(
-            "SELECT 1 FROM manifest_entries WHERE dataset_id = ? LIMIT 1",
-            (dataset_id,)
-        )
-        if cursor.fetchone() is None:
+        prepared_ok = bool(cached_prepare) or (dataset_exists and manifest_rows > 0 and bin_rows > 0)
+        
+        if not prepared_ok:
             print(
                 "No prepared manifest found; run `kv-transition prepare` first.",
                 file=sys.stderr
