@@ -112,7 +112,7 @@ For each task (TREC, NarrativeQA):
 **Goal:** If Pass 4 fails, isolate *one* root cause without exploding scope.
 
 ### Steps (execute in order; stop when resolved)
-4.1 **Confirm KV param is not ignored**
+4.1 **Confirm KV param is not ignored** (IN PROGRESS)
 - Run a single long-context example (top bin) repeatedly with budget=1.0 vs 0.2 (n=5 each).
 - **Check:** If outputs are statistically indistinguishable across budgets (scores + length + behavior), suspect KV param is being ignored by server.
 
@@ -150,3 +150,5 @@ Personal notes/observations for pass 5
 2. Effiency. Preparing the dataset step takes an extremely long time.
 3. CLI always return "no transition detected" - must be something deeper there
 4. Are our arguments actually getting passed? Part of (1), Realized that the snapkv etc arguments arent correctly ordered, need to ensure all that is correct.
+5. Maybe provide original contextcliff documents, see if any of the values in there would meaningfully and easily improve the current setup?
+6. Ask about reset scope in 291 context?

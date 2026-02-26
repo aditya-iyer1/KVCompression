@@ -321,6 +321,36 @@ def run_one_setting(
         print(f"  Warning: No manifest entries found for dataset_id={dataset_id}")
         return
     
+    # Optional single-entry filter (run.filter_dataset_id + run.filter_entry_idx)
+    run_cfg = settings.get("run", {}) or {}
+    filter_dataset_id = run_cfg.get("filter_dataset_id")
+    filter_entry_idx_raw = run_cfg.get("filter_entry_idx")
+    if filter_dataset_id is not None or filter_entry_idx_raw is not None:
+        if filter_dataset_id is None or filter_entry_idx_raw is None:
+            raise ValueError(
+                "run.filter_dataset_id and run.filter_entry_idx must both be set or both unset; "
+                f"got filter_dataset_id={filter_dataset_id!r}, filter_entry_idx={filter_entry_idx_raw!r}"
+            )
+        try:
+            filter_entry_idx = int(filter_entry_idx_raw)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"run.filter_entry_idx must be an integer, got {filter_entry_idx_raw!r}"
+            )
+        if dataset_id != filter_dataset_id:
+            raise ValueError(
+                f"run.filter_dataset_id={filter_dataset_id!r} does not match current dataset_id={dataset_id!r}; "
+                "filter applies only to the configured dataset"
+            )
+        filtered = [e for e in manifest_entries if e["entry_idx"] == filter_entry_idx]
+        if not filtered:
+            raise ValueError(
+                f"No manifest entry with entry_idx={filter_entry_idx} for dataset_id={dataset_id}; "
+                f"valid entry_idx range is [0, {len(manifest_entries) - 1}]"
+            )
+        manifest_entries = filtered
+        print(f"  Filtered run: executing only (dataset_id={dataset_id!r}, entry_idx={filter_entry_idx})")
+    
     print(f"  Processing {len(manifest_entries)} manifest entries")
     
     # Get example IDs
