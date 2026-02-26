@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+set -x
+export PYTHONUNBUFFERED=1
 
 cd "$(dirname "$0")/.."
 
@@ -23,8 +25,8 @@ if [[ ! -x ".venv_vllm/bin/python" ]]; then
   uv venv .venv_vllm --python 3.12
 fi
 
-uv pip install --python .venv_vllm/bin/python -U pip >/dev/null
-uv pip install --python .venv_vllm/bin/python "vllm==0.15.1" >/dev/null
+uv pip install --python .venv_vllm/bin/python -U pip
+uv pip install --python .venv_vllm/bin/python "vllm==0.15.1"
 
 exec env VLLM_LOGGING_LEVEL=INFO .venv_vllm/bin/python -m vllm.entrypoints.openai.api_server \
   --host 0.0.0.0 --port 8000 \
