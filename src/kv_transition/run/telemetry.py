@@ -54,14 +54,24 @@ def extract_telemetry(engine_result: EngineResult) -> Dict[str, Any]:
     telemetry["finish_reason"] = engine_result.finish_reason
     
     # Optional notes (can include additional metadata)
-    notes = {}
+    notes: Dict[str, Any] = {}
+    # 1) Start with any existing notes attached to the engine result (if present)
+    existing_notes = getattr(engine_result, "notes", None)
+    if isinstance(existing_notes, dict):
+        notes.update(existing_notes)
+    
+    # 2) Add fields derived from raw response (model, response_id)
     if engine_result.raw:
-        # Include any additional fields from raw response that might be useful
         raw = engine_result.raw
         if "model" in raw:
-            notes["model"] = raw["model"]
+            notes.setdefault("model", raw["model"])
         if "id" in raw:
-            notes["response_id"] = raw["id"]
+            notes.setdefault("response_id", raw["id"])
+    
+    # 3) If timings contain an outbound_request snapshot, persist it under notes["outbound_request"]
+    outbound_request = timings.get("outbound_request")
+    if outbound_request is not None:
+        notes["outbound_request"] = outbound_request
     
     telemetry["notes"] = notes if notes else None
     
