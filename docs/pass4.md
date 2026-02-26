@@ -41,7 +41,7 @@
 **Goal:** Choose bins/tasks/settings that *should* show degradation if KV compression works.
 
 ### Steps
-1.1 **Pin two tasks, 4 bins, deterministic sampling** (COMPLETE)
+1.1 **Pin two tasks, 4 bins, deterministic sampling** (VERIFIED + COMPLETE)
 - Use your two tasks: **TREC** and **NarrativeQA**.
 - Set `n_bins = 4`, `n_per_bin = 8` (enough for stable bin means without blowing cost).
 - `temperature=0`, keep `max_tokens` fixed across runs.
@@ -155,8 +155,12 @@ Personal notes/observations for pass 5
 
 
 
+---
 
+For [PLAN] Thread
 
 
 •	“For real OpenAI API runs, we will not send extra_body KV params; Step 0.1 will be satisfied by (a) distinct runs.kv_budget values and (b) documented limitation that OpenAI won’t accept/echo KV params.”
 •	“Step 0.1 strict ‘payload contains kv_budget’ will be enforced on GPU vLLM openai_compat runs only.”
+•	OpenAI runs = reference/measurement validation only (binning, scoring, failure attribution, report plumbing, and “does task performance vary with length at all under stable decoding?”)
+•	vLLM runs = compression validation (SnapKV actually applied; request-time KV knobs must be honored; this is where “budget causes degradation” is meaningful)

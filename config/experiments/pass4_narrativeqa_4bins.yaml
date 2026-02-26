@@ -16,7 +16,7 @@ binning:
 model:
   name: ${MODEL_NAME}
   # Exceeds longest-bin prompt token length + max_tokens (128) + runner safety buffer (256).
-  max_model_len: 10240
+  max_model_len: 65536
 
 engine:
   name: openai_compat

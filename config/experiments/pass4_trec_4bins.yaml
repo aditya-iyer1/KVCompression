@@ -26,7 +26,7 @@ engine:
     timeout_s: 120
     extra_body:
       kv_budget: "{kv_budget}"
-      kv_policy: "{kv.policy}"
+      # kv_policy: "{kv.policy}"
 
 kv:
   policy: snapkv
