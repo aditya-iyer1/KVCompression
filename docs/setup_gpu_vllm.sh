@@ -16,8 +16,8 @@ fi
 
 uv venv .venv_vllm --python 3.12
 
-uv pip -p .venv_vllm install -U pip >/dev/null
-uv pip -p .venv_vllm install "vllm==0.15.1" >/dev/null
+uv pip install --python .venv_vllm/bin/python -U pip >/dev/null
+uv pip install --python .venv_vllm/bin/python "vllm==0.15.1" >/dev/null
 
 exec env VLLM_LOGGING_LEVEL=INFO .venv_vllm/bin/python -m vllm.entrypoints.openai.api_server \
   --host 0.0.0.0 --port 8000 \
