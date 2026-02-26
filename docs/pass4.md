@@ -120,7 +120,7 @@ For each task (TREC, NarrativeQA):
 - Increase `n_per_bin` only for the longest bin (e.g., bin 3 from 8 → 20) for one task only (NarrativeQA).
 - **Check:** If degradation emerges only with more samples, it was variance/underpowered bins; keep Pass 4 success tied to updated sample size and document it.
 
-4.3 **Lock “effective context length”**
+4.3 **Lock “effective context length”** (COMPLETE)
 - Verify token_len distribution per bin is meaningfully separated (bin edges not too close).
 - **Check:** Longest bin median token_len is at least ~2× shortest bin median token_len (rough heuristic). If not, binning isn’t creating a length signal.
 
