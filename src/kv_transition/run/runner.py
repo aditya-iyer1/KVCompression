@@ -18,6 +18,7 @@ from ..db import dao
 from ..engines.base import BaseEngine
 from ..eval.failure_taxonomy import classify_failure
 from ..data import tokenizer
+from .telemetry import extract_telemetry
 
 # Global pacer: monotonic time of last request start (persists across budgets in same process)
 _last_request_monotonic: Optional[float] = None
@@ -520,8 +521,10 @@ def run_one_setting(
             total_tokens = usage.get("total_tokens")
             if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
                 total_tokens = prompt_tokens + completion_tokens
-            timings = result.timings or {}
-            latency_s = timings.get("latency_s")
+                # Update usage copy so extract_telemetry sees the inferred total_tokens.
+                usage = dict(usage)
+                usage["total_tokens"] = total_tokens
+                result.usage = usage
             response_id = str(uuid4())
             dao.insert_response(
                 conn=conn,
@@ -532,14 +535,7 @@ def run_one_setting(
                 usage=usage,
                 raw=raw,
             )
-            telemetry = {
-                "latency_s": latency_s,
-                "ttfb_s": timings.get("ttfb_s"),
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": total_tokens,
-                "notes": None,
-            }
+            telemetry = extract_telemetry(result)
             dao.upsert_telemetry(conn, request_id=request_id, telemetry=telemetry)
             conn.execute("DELETE FROM failures WHERE request_id = ?", (request_id,))
             if (idx + 1) % 10 == 0 or (idx + 1) == len(manifest_entries):
