@@ -13,4 +13,4 @@ data/processed/
 */.ipynb_checkpoints/
 /data/cache/
 *.venv_vllm/
-.venv/
+KVCache-Factory/
