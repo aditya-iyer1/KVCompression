@@ -414,7 +414,22 @@ def run_one_setting(
     cap_candidate = model_max_len_int - gen_max_tokens_int - buffer
     if cap_candidate > 0:
         runtime_prompt_cap = cap_candidate
-    
+
+    # Override via settings.run.runtime_prompt_cap: None disables guard; int-like sets cap.
+    run_cfg = settings.get("run", {}) or {}
+    if "runtime_prompt_cap" in run_cfg:
+        override_val = run_cfg["runtime_prompt_cap"]
+        if override_val is None:
+            runtime_prompt_cap = None
+        else:
+            try:
+                cap_int = int(override_val)
+                runtime_prompt_cap = max(1, cap_int) if cap_int >= 1 else None
+            except (TypeError, ValueError) as e:
+                raise ValueError(
+                    f"settings.run.runtime_prompt_cap must be null or int-like, got {override_val!r}"
+                ) from e
+
     # Extract timeout
     timeout_s = None
     engine_settings = settings.get("engine", {})

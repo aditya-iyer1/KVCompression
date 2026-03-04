@@ -40,3 +40,6 @@ output:
 
 db:
   path: auto
+
+run:
+  runtime_prompt_cap: null
