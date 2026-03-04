@@ -24,6 +24,10 @@ engine:
   api_key_env: OPENAI_API_KEY
   request:
     timeout_s: 120
+    # For non-OpenAI endpoints (e.g. vLLM), extra_body is required for KV budget to actually apply.
+    extra_body:
+      kv_budget: "{kv_budget}"
+      # kv_policy: "{kv.policy}"
 
 kv:
   policy: snapkv
