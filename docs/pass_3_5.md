@@ -18,10 +18,10 @@
 
 # Lane A — OpenAI-only Validation (NO compression)
 
-## A0) Pin “OpenAI Reference” configs (single-budget)
+## A0) Pin “OpenAI Reference” configs (single-budget) **(COMPLETE + VERIFIED)**
 **Goal:** Make runs meaningful and rate-limit-friendly.
 
-**Steps**
+**Steps** (COMPLETE)
 A0.1 Create/confirm pinned configs per task (TREC, NarrativeQA):
 - `budgets: [1.0]` (single run)
 - `n_bins: 4`, `n_per_bin: small` (e.g., 5–8)
@@ -32,17 +32,17 @@ A0.1 Create/confirm pinned configs per task (TREC, NarrativeQA):
 
 ---
 
-## A1) Prepare correctness (binning + manifest + DB parity)
+## A1) Prepare correctness (binning + manifest + DB parity) **(COMPLETE + VERIFIED)**
 **Goal:** Ensure the “length signal” is real and deterministic.
 
 **Steps**
-A1.1 `prepare` for each task config.
+A1.1 `prepare` for each task config. (COMPLETE)
 
-A1.2 Verify bin separation using DB/manifest stats:
+A1.2 Verify bin separation using DB/manifest stats: (COMPLETE)
 - bin edges monotonically increasing
 - token_len distribution increases with bin_idx
 
-**Check (deterministic):**
+**Check (deterministic):** 
 - 4 bins exist
 - each bin has `n_per_bin` entries (or documented shortfall if dataset constrained)
 - median token_len(bin 3) > median token_len(bin 0)
