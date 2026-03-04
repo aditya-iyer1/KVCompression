@@ -278,6 +278,7 @@ class KVFactoryEngine(BaseEngine):
 
         raw = {
             "kvfactory": {
+                "python": sys.executable,
                 "cmd": cmd,
                 "returncode": proc.returncode,
                 "dataset": dataset,
