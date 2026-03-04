@@ -1,0 +1,42 @@
+# passy_gpu_backend.yaml
+
+
+dataset:
+  name: longbench
+  task: narrativeqa
+  n_per_bin: 2
+  pinned_entry_indices: [0,1]
+
+binning:
+  n_bins: 2
+
+model:
+  name: TinyLlama-3-8B-Instruct
+
+engine:
+  type: kvfactory
+  kvfactory_repo_dir: ~/KVCompression/KVCache-Factory
+  method: snapkv
+  attn_implementation: sdpa
+  max_capacity_prompts: -1
+  rate_limit:
+    max_rpm: 30
+  request:
+    timeout_s: 120
+
+kv:
+  policy: snapkv
+  budgets: [1.0, 0.2]
+
+decoding:
+  temperature: 0
+  max_tokens: 256
+
+analysis:
+  seed: 1337
+
+output:
+  exp_group_id: passy_gpu_backend_smoke
+
+db:
+  path: auto
