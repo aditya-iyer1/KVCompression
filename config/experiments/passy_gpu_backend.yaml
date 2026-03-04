@@ -15,7 +15,7 @@ model:
 
 engine:
   type: kvfactory
-  kvfactory_repo_dir: ~/KVCompression/KVCache-Factory
+  kvfactory_repo_dir: /home/jovyan/KVCompression/KVCache-Factory
   method: snapkv
   attn_implementation: sdpa
   max_capacity_prompts: -1
