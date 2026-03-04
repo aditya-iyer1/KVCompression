@@ -262,7 +262,7 @@ def run_one_setting(
     # Ensure run row exists once per run
     exp_group_id = settings["output"]["exp_group_id"]
     kv_policy = settings.get("kv", {}).get("policy", "unknown")
-    engine_name = "openai_compat"
+    engine_name = getattr(engine, "engine_name", None) or engine.__class__.__name__
     base_url = getattr(engine, "base_url", "")
     
     # Check if run already exists and validate prompt_template_version
@@ -303,13 +303,34 @@ def run_one_setting(
         print(f"  Debug: run_id={run_id}, kv_budget={kv_budget}, model={model_name}, base_url={base_url}")
     
     is_openai = _is_openai_base_url(base_url)
-    # Allow extra_body forwarding for non-OpenAI openai_compat endpoints and for
+    # Allow extra_body forwarding for non-OpenAI OpenAI-compatible endpoints and for
     # non-openai_compat engines. Never forward extra_body to the real OpenAI API.
-    allow_extra_body = (engine_name == "openai_compat" and not is_openai) or (engine_name != "openai_compat")
+    is_openai_compat_engine = (engine_name == "openai_compat") or (engine.__class__.__name__ == "OpenAICompatEngine")
+    allow_extra_body = (is_openai_compat_engine and not is_openai) or (not is_openai_compat_engine)
     extra_kwargs: Dict[str, Any] = {}
     if allow_extra_body:
         extra_body = settings.get("engine", {}).get("request", {}).get("extra_body")
         extra_kwargs = _resolve_extra_body(extra_body, kv_budget)
+    
+    # KVCache-Factory engine needs LongBench dataset + budget-derived ratios.
+    is_kvfactory = (getattr(engine, "engine_name", "") == "kvfactory") or (engine.__class__.__name__ == "KVFactoryEngine")
+    if is_kvfactory:
+        try:
+            kv_budget_f = float(kv_budget)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"kv_budget must be convertible to float, got {kv_budget!r}") from e
+        ds_cfg = settings.get("dataset", {}) or {}
+        dataset = ds_cfg.get("task") or ds_cfg.get("name")
+        if not dataset:
+            raise ValueError("settings.dataset.task (or settings.dataset.name) is required for engine.type=kvfactory")
+        extra_kwargs = dict(extra_kwargs)
+        extra_kwargs.update(
+            {
+                "dataset": dataset,
+                "max_capacity_prompts_ratio": float(kv_budget_f),
+                "pruning_ratio": float(1.0 - float(kv_budget_f)),
+            }
+        )
     
     # Identify dataset_id
     dataset_name = settings["dataset"]["name"]
