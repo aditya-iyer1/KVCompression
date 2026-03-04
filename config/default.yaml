@@ -14,7 +14,7 @@ model:
   name: ${MODEL_NAME}  # Model identifier (resolve from env var)
 
 engine:
-  base_url: ${BASE_URL}  # OpenAI-compatible endpoint (resolve from env var)
+  base_url: https://api.openai.com  # OpenAI-compatible endpoint (resolve from env var)
   api_key_env: OPENAI_API_KEY  # Environment variable name for API key
   request:
     timeout_s: 120  # Request timeout in seconds

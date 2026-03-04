@@ -1,5 +1,5 @@
 # Pass 3.5 A0 validation: OpenAI-only NarrativeQA, 4 bins, single budget [1.0].
-# Small, rate-limit-friendly run with no KV compression (budget 1.0 only).
+# Small, rate-limit-friendly run with no KV compression (budget 1.0 only), with a prepare-time prompt-length cap.
 #
 # Usage (uv):
 #   uv run python -m kv_transition all -c config/experiments/pass3_5_openai_narrativeqa.yaml
@@ -8,6 +8,7 @@ dataset:
   name: longbench
   task: narrativeqa
   n_per_bin: 6
+  max_prompt_tokens: 7000
   seed: 1337
 
 binning:
