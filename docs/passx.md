@@ -31,7 +31,7 @@ PASS X succeeds if **all** are true on GPU/vLLM:
 
 # 0) Preconditions Gate — GPU-only (Hard stop if fail)
 
-### 0.1 GPU server contract (one-time per GPU session)
+### 0.1 GPU server contract (one-time per GPU session) **(COMPLETE + VERIFIED)**
 **Goal:** Ensure the serving stack can accept request-time KV params.
 
 **Steps**
@@ -40,7 +40,7 @@ PASS X succeeds if **all** are true on GPU/vLLM:
 
 **Check:** A single completion request succeeds and is logged to DB (non-empty output).
 
-### 0.2 KV param acceptance proof (must be DB-evidenced)
+### 0.2 KV param acceptance proof (must be DB-evidenced) **(COMPLETE + VERIFIED)**
 **Goal:** Verify budgets are not “just labels.”
 
 **Steps**
@@ -59,7 +59,7 @@ PASS X succeeds if **all** are true on GPU/vLLM:
 
 # 1) Pin a “Degradation-Revealing” GPU Experiment — [GPU]
 
-### 1.1 Choose a single task that should show context sensitivity
+### 1.1 Choose a single task that should show context sensitivity **(COMPLETE + VERIFIED)**
 **Goal:** Maximize chance of a clear effect quickly.
 
 **Constraint:** Use **one** task for PASS X (NarrativeQA preferred unless you have a better known-stressor).

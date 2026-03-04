@@ -13,7 +13,7 @@ dataset:
   max_prompt_tokens: 7900
 
 binning:
-  n_bins: 4
+  n_bins: 3
 
 model:
   name: ${MODEL_NAME}
